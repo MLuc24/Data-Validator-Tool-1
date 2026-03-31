@@ -5,12 +5,18 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
 import {
   AlertCircle, CheckCircle2, Loader2,
   FileSpreadsheet, LogIn, LogOut, UserCircle2,
   Building2, Layers3, MapPin, CloudUpload, ChevronRight,
   Calendar, ClipboardList, Upload, ChevronDown, Users,
+  History, ShieldCheck, ThumbsUp, ThumbsDown, Eye,
+  FileCheck2, FileClock, FileX2, RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/lib/supabase";
@@ -28,6 +34,19 @@ const ALL = "__all__";
 
 interface RowData { [key: string]: string | number; }
 type ValidationStatus = "idle" | "validating" | "valid" | "invalid";
+
+interface BatchRecord {
+  id: number;
+  uploaded_by: number;
+  file_name: string;
+  original_file_name: string | null;
+  total_rows: number;
+  success_rows: number;
+  failed_rows: number;
+  status: "draft" | "completed" | "failed";
+  submitted_at: string;
+  note: string | null;
+}
 
 function parseDate(raw: string | number | undefined): string | null {
   if (!raw) return null;
@@ -180,6 +199,91 @@ export default function UploadPage() {
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+
+  // ── Approver role ──────────────────────────────────────────
+  const [isApprover, setIsApprover] = useState(false);
+
+  // ── History / Approval panel ───────────────────────────────
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyBatches, setHistoryBatches] = useState<BatchRecord[]>([]);
+  const [pendingBatches, setPendingBatches] = useState<BatchRecord[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [approvingId, setApprovingId] = useState<number | null>(null);
+  const [historyTab, setHistoryTab] = useState<"mine" | "pending">("mine");
+
+  // Detect approver role when user logs in
+  useEffect(() => {
+    if (!loggedInUser) { setIsApprover(false); return; }
+    supabase.from("users").select("is_approver").eq("id", loggedInUser.id).single()
+      .then(({ data, error }) => {
+        if (!error && data && (data as { is_approver?: boolean }).is_approver === true) {
+          setIsApprover(true);
+        } else {
+          setIsApprover(false);
+        }
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loggedInUser?.id]);
+
+  const loadHistory = async () => {
+    if (!loggedInUser) return;
+    setHistoryLoading(true);
+    try {
+      const [myRes, pendingRes] = await Promise.all([
+        supabase.from("upload_batches")
+          .select("*")
+          .eq("uploaded_by", loggedInUser.id)
+          .order("submitted_at", { ascending: false })
+          .limit(50),
+        isApprover
+          ? supabase.from("upload_batches")
+              .select("*")
+              .eq("status", "draft")
+              .order("submitted_at", { ascending: false })
+              .limit(50)
+          : Promise.resolve({ data: [] as BatchRecord[], error: null }),
+      ]);
+      if (myRes.data) setHistoryBatches(myRes.data as BatchRecord[]);
+      if (pendingRes.data) setPendingBatches(pendingRes.data as BatchRecord[]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (historyOpen) loadHistory();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyOpen]);
+
+  const handleApprove = async (batchId: number) => {
+    setApprovingId(batchId);
+    try {
+      const { error } = await supabase.from("upload_batches")
+        .update({ status: "completed" }).eq("id", batchId);
+      if (error) throw new Error(error.message);
+      toast({ title: "Đã phê duyệt!", description: `Batch #${batchId} đã được chấp thuận.` });
+      await loadHistory();
+    } catch (err) {
+      toast({ title: "Lỗi phê duyệt", description: String(err), variant: "destructive" });
+    } finally {
+      setApprovingId(null);
+    }
+  };
+
+  const handleReject = async (batchId: number) => {
+    setApprovingId(batchId);
+    try {
+      const { error } = await supabase.from("upload_batches")
+        .update({ status: "failed" }).eq("id", batchId);
+      if (error) throw new Error(error.message);
+      toast({ title: "Đã từ chối", description: `Batch #${batchId} đã bị từ chối.` });
+      await loadHistory();
+    } catch (err) {
+      toast({ title: "Lỗi từ chối", description: String(err), variant: "destructive" });
+    } finally {
+      setApprovingId(null);
+    }
+  };
 
   // ── Data-vs-filter validation ────────────────────────────────
   const validateDataAgainstFilters = useCallback((
@@ -395,7 +499,7 @@ export default function UploadPage() {
         total_rows: totalRows,
         success_rows: rows.length,
         failed_rows: 0,
-        status: "completed",
+        status: isApprover ? "completed" : "draft",
       };
 
       const { data: batchData, error: batchError } = await supabase
@@ -438,7 +542,12 @@ export default function UploadPage() {
         if (error) throw new Error(error.message || error.details || JSON.stringify(error));
       }
 
-      toast({ title: "Submit thành công!", description: `${totalRows.toLocaleString()} dòng đã được lưu.` });
+      toast({
+        title: isApprover ? "Submit thành công!" : "Gửi thành công! Chờ phê duyệt.",
+        description: isApprover
+          ? `${totalRows.toLocaleString()} dòng đã được lưu và phê duyệt.`
+          : `${totalRows.toLocaleString()} dòng đã gửi. Người phê duyệt sẽ xem xét.`,
+      });
       handleClearFile();
     } catch (err) {
       const msg = err instanceof Error ? err.message : JSON.stringify(err);
@@ -448,7 +557,8 @@ export default function UploadPage() {
     }
   };
 
-  const canSubmit = !isSubmitting;
+  const canSubmit = !!loggedInUser && !!resolvedCompanyId && !!resolvedCCId
+    && validationStatus === "valid" && !isSubmitting;
 
   const notLoggedIn = !loggedInUser;
 
@@ -467,12 +577,35 @@ export default function UploadPage() {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             {isLoadingMaster && (
               <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
                 <span className="hidden sm:inline">Đang tải...</span>
               </span>
+            )}
+            {/* History button */}
+            {loggedInUser && (
+              <button
+                onClick={() => { setHistoryOpen(true); setHistoryTab(isApprover && pendingBatches.length > 0 ? "pending" : "mine"); }}
+                className="relative flex items-center gap-1.5 border border-border/60 rounded-lg px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors"
+                title="Lịch sử file"
+              >
+                <History className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Lịch sử</span>
+                {isApprover && pendingBatches.length > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] bg-amber-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center px-1">
+                    {pendingBatches.length}
+                  </span>
+                )}
+              </button>
+            )}
+            {/* Approver badge */}
+            {isApprover && (
+              <div className="hidden sm:flex items-center gap-1 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
+                <ShieldCheck className="w-3 h-3 text-amber-600" />
+                <span className="text-[10px] font-semibold text-amber-700">Phê duyệt</span>
+              </div>
             )}
             {loggedInUser ? (
               <div className="flex items-center gap-2">
@@ -771,7 +904,9 @@ export default function UploadPage() {
               >
                 {isSubmitting
                   ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Đang gửi...</>
-                  : <><ClipboardList className="w-3.5 h-3.5" />Submit</>
+                  : isApprover
+                    ? <><ShieldCheck className="w-3.5 h-3.5" />Submit & Duyệt</>
+                    : <><ClipboardList className="w-3.5 h-3.5" />Gửi chờ duyệt</>
                 }
               </Button>
             </div>
@@ -861,6 +996,216 @@ export default function UploadPage() {
           )}
         </div>
       </main>
+
+      {/* ── History & Approval Sheet ── */}
+      <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
+        <SheetContent className="w-full sm:w-[520px] sm:max-w-[520px] p-0 flex flex-col" side="right">
+          <SheetHeader className="px-6 py-4 border-b border-border/50 flex-shrink-0">
+            <div className="flex items-center justify-between">
+              <SheetTitle className="flex items-center gap-2 text-base">
+                <History className="w-4 h-4 text-primary" />
+                Lịch sử File Upload
+              </SheetTitle>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={loadHistory}
+                  disabled={historyLoading}
+                  className="text-muted-foreground hover:text-foreground p-1 rounded-md transition-colors"
+                  title="Làm mới"
+                >
+                  <RefreshCw className={cn("w-3.5 h-3.5", historyLoading && "animate-spin")} />
+                </button>
+              </div>
+            </div>
+            {loggedInUser && (
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {loggedInUser.full_name}
+                {isApprover && (
+                  <span className="ml-2 inline-flex items-center gap-1 text-amber-600">
+                    <ShieldCheck className="w-3 h-3" /> Người phê duyệt
+                  </span>
+                )}
+              </p>
+            )}
+          </SheetHeader>
+
+          <Tabs value={historyTab} onValueChange={(v) => setHistoryTab(v as "mine" | "pending")} className="flex-1 flex flex-col min-h-0">
+            <TabsList className="mx-4 mt-3 mb-0 grid w-auto self-start gap-1 h-auto bg-muted/50 p-1 rounded-xl" style={{ gridTemplateColumns: isApprover ? "1fr 1fr" : "1fr" }}>
+              <TabsTrigger value="mine" className="text-xs rounded-lg px-4 py-1.5 data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                <FileSpreadsheet className="w-3 h-3 mr-1.5" />
+                File của tôi
+                <Badge variant="secondary" className="ml-1.5 text-[9px] px-1.5 h-4">{historyBatches.length}</Badge>
+              </TabsTrigger>
+              {isApprover && (
+                <TabsTrigger value="pending" className="text-xs rounded-lg px-4 py-1.5 data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                  <FileClock className="w-3 h-3 mr-1.5" />
+                  Chờ duyệt
+                  {pendingBatches.length > 0 && (
+                    <Badge className="ml-1.5 text-[9px] px-1.5 h-4 bg-amber-500 hover:bg-amber-500">{pendingBatches.length}</Badge>
+                  )}
+                </TabsTrigger>
+              )}
+            </TabsList>
+
+            {/* My Files tab */}
+            <TabsContent value="mine" className="flex-1 min-h-0 mt-0 data-[state=active]:flex data-[state=active]:flex-col">
+              <ScrollArea className="flex-1 px-4 pt-3">
+                {historyLoading ? (
+                  <div className="flex items-center justify-center py-16">
+                    <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                  </div>
+                ) : historyBatches.length === 0 ? (
+                  <div className="flex flex-col items-center py-16 gap-3">
+                    <div className="w-12 h-12 rounded-2xl bg-muted flex items-center justify-center">
+                      <FileSpreadsheet className="w-6 h-6 text-muted-foreground/40" />
+                    </div>
+                    <p className="text-sm text-muted-foreground">Chưa có file nào được upload</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2 pb-6">
+                    {historyBatches.map((batch) => (
+                      <BatchCard
+                        key={batch.id}
+                        batch={batch}
+                        uploaderName={allUsers.find(u => u.id === batch.uploaded_by)?.full_name}
+                        isApprover={isApprover}
+                        approvingId={approvingId}
+                        onApprove={handleApprove}
+                        onReject={handleReject}
+                        showActions={false}
+                      />
+                    ))}
+                  </div>
+                )}
+              </ScrollArea>
+            </TabsContent>
+
+            {/* Pending approval tab */}
+            {isApprover && (
+              <TabsContent value="pending" className="flex-1 min-h-0 mt-0 data-[state=active]:flex data-[state=active]:flex-col">
+                <ScrollArea className="flex-1 px-4 pt-3">
+                  {historyLoading ? (
+                    <div className="flex items-center justify-center py-16">
+                      <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                    </div>
+                  ) : pendingBatches.length === 0 ? (
+                    <div className="flex flex-col items-center py-16 gap-3">
+                      <div className="w-12 h-12 rounded-2xl bg-emerald-50 flex items-center justify-center">
+                        <FileCheck2 className="w-6 h-6 text-emerald-500" />
+                      </div>
+                      <p className="text-sm text-muted-foreground">Không có file chờ phê duyệt</p>
+                      <p className="text-xs text-muted-foreground/70">Tất cả đã được xử lý</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2 pb-6">
+                      <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-center gap-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                        {pendingBatches.length} file đang chờ phê duyệt của bạn
+                      </p>
+                      {pendingBatches.map((batch) => (
+                        <BatchCard
+                          key={batch.id}
+                          batch={batch}
+                          uploaderName={allUsers.find(u => u.id === batch.uploaded_by)?.full_name}
+                          isApprover={isApprover}
+                          approvingId={approvingId}
+                          onApprove={handleApprove}
+                          onReject={handleReject}
+                          showActions={true}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </ScrollArea>
+              </TabsContent>
+            )}
+          </Tabs>
+        </SheetContent>
+      </Sheet>
+    </div>
+  );
+}
+
+// ── BatchCard sub-component ────────────────────────────────
+function BatchCard({
+  batch,
+  uploaderName,
+  isApprover,
+  approvingId,
+  onApprove,
+  onReject,
+  showActions,
+}: {
+  batch: BatchRecord;
+  uploaderName?: string;
+  isApprover: boolean;
+  approvingId: number | null;
+  onApprove: (id: number) => void;
+  onReject: (id: number) => void;
+  showActions: boolean;
+}) {
+  const statusConfig = {
+    draft: { label: "Chờ duyệt", icon: FileClock, className: "bg-amber-50 text-amber-700 border-amber-200" },
+    completed: { label: "Đã duyệt", icon: FileCheck2, className: "bg-emerald-50 text-emerald-700 border-emerald-200" },
+    failed: { label: "Từ chối", icon: FileX2, className: "bg-red-50 text-red-700 border-red-200" },
+  };
+  const cfg = statusConfig[batch.status] ?? statusConfig.draft;
+  const StatusIcon = cfg.icon;
+  const isBusy = approvingId === batch.id;
+  const date = new Date(batch.submitted_at).toLocaleString("vi-VN", {
+    day: "2-digit", month: "2-digit", year: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
+
+  return (
+    <div className="border border-border/60 rounded-xl p-3.5 bg-white hover:shadow-sm transition-shadow">
+      <div className="flex items-start gap-3">
+        <div className="w-9 h-9 rounded-lg bg-muted flex items-center justify-center shrink-0">
+          <StatusIcon className={cn("w-4 h-4", batch.status === "completed" ? "text-emerald-500" : batch.status === "failed" ? "text-red-500" : "text-amber-500")} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="text-xs font-semibold text-foreground truncate max-w-[200px]" title={batch.original_file_name ?? batch.file_name}>
+              {batch.original_file_name ?? batch.file_name}
+            </p>
+            <span className={cn("text-[10px] font-medium border px-1.5 py-0.5 rounded-md", cfg.className)}>
+              {cfg.label}
+            </span>
+          </div>
+          <div className="flex items-center gap-3 mt-1 flex-wrap">
+            <span className="text-[10px] text-muted-foreground">#{batch.id}</span>
+            <span className="text-[10px] text-muted-foreground">{date}</span>
+            <span className="text-[10px] font-mono text-muted-foreground">{batch.total_rows.toLocaleString()} dòng</span>
+          </div>
+          {uploaderName && isApprover && (
+            <p className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
+              <Eye className="w-3 h-3" /> {uploaderName}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Approve / Reject buttons for approver */}
+      {showActions && isApprover && batch.status === "draft" && (
+        <div className="flex gap-2 mt-3 pt-3 border-t border-border/40">
+          <button
+            onClick={() => onApprove(batch.id)}
+            disabled={isBusy}
+            className="flex-1 flex items-center justify-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-60"
+          >
+            {isBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ThumbsUp className="w-3.5 h-3.5" />}
+            Phê duyệt
+          </button>
+          <button
+            onClick={() => onReject(batch.id)}
+            disabled={isBusy}
+            className="flex-1 flex items-center justify-center gap-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-60"
+          >
+            {isBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ThumbsDown className="w-3.5 h-3.5" />}
+            Từ chối
+          </button>
+        </div>
+      )}
     </div>
   );
 }
