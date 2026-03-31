@@ -1,26 +1,39 @@
-export interface CostCenterDetail {
-  cost_center_code: string;
-  cost_center_name: string;
-  company_id: number;
-  company_name: string;
-  plan_id: number;
-  plan_name: string;
-  parent_name: string | null;
+export interface AppUser {
+  id: number;
+  full_name: string;
+  email: string | null;
   is_active: boolean;
 }
 
-export interface AppUser {
-  user_id: string;
-  full_name: string;
-  email: string | null;
-  cost_center_code: string | null;
-  is_active: boolean;
+export interface UserMapping {
+  id: number;
+  user_id: number;
+  company_id: string;
+  plan_id: number;
+  cost_center_id: string;
+}
+
+export interface CostCenter {
+  cost_center_id: string;
+  cost_center_name: string;
+  company_id: string;
+  plan_id: number;
+}
+
+export interface Company {
+  company_id: string;
+  company_name: string;
+}
+
+export interface Plan {
+  plan_id: number;
+  plan_name: string;
 }
 
 export interface UploadBatchInsert {
   upload_date: string;
   accountant_name: string;
-  company_id: number;
+  company_id: string;
   cost_center_code: string;
   bp: string | null;
   file_name: string;
@@ -28,7 +41,7 @@ export interface UploadBatchInsert {
   total_rows: number;
   preview_rows: number;
   status: "submitted";
-  uploaded_by: string | null;
+  uploaded_by: number | null;
   note: string | null;
 }
 
@@ -48,14 +61,4 @@ export interface UploadRowInsert {
   block_name: string | null;
   department_name: string | null;
   raw_json: Record<string, unknown> | null;
-}
-
-export interface KhoiOption {
-  plan_id: number;
-  plan_name: string;
-}
-
-export interface CompanyOption {
-  company_id: number;
-  company_name: string;
 }

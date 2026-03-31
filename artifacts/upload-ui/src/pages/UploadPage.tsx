@@ -6,15 +6,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import {
-  Upload, AlertCircle, CheckCircle2, Loader2,
+  AlertCircle, CheckCircle2, Loader2,
   FileSpreadsheet, LogIn, LogOut, UserCircle2,
   Building2, Layers3, MapPin, CloudUpload, ChevronRight,
-  Calendar, ClipboardList,
+  Calendar, ClipboardList, Upload,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/lib/supabase";
 import type {
-  CostCenterDetail, AppUser, KhoiOption, CompanyOption,
+  AppUser, UserMapping, CostCenter, Company, Plan,
   UploadBatchInsert, UploadRowInsert,
 } from "@/types/supabase";
 
@@ -22,6 +22,8 @@ const REQUIRED_COLUMNS = [
   "Ngày", "Mã hệ thống", "Nhóm chỉ tiêu", "Khoản mục", "Tiểu mục",
   "Thuộc tính", "Nội dung", "Công ty", "Loại dữ liệu", "Khối", "Bộ phận", "Số tiền",
 ];
+
+const ALL = "__all__";
 
 interface RowData { [key: string]: string | number; }
 type ValidationStatus = "idle" | "validating" | "valid" | "invalid";
@@ -45,19 +47,6 @@ function parseAmount(raw: string | number | undefined): number | null {
   return isNaN(n) ? null : n;
 }
 
-function StepBadge({ n, active, done }: { n: number; active: boolean; done: boolean }) {
-  return (
-    <div className={cn(
-      "w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 transition-all duration-200",
-      done ? "bg-primary text-primary-foreground shadow-sm" :
-      active ? "bg-primary/10 text-primary border-2 border-primary" :
-      "bg-muted text-muted-foreground border border-border"
-    )}>
-      {done ? <CheckCircle2 className="w-4 h-4" /> : n}
-    </div>
-  );
-}
-
 export default function UploadPage() {
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -66,75 +55,114 @@ export default function UploadPage() {
     day: "2-digit", month: "2-digit", year: "numeric",
   });
 
-  // ── Supabase data ──────────────────────────────────────────
-  const [ccDetails, setCcDetails] = useState<CostCenterDetail[]>([]);
-  const [appUsers, setAppUsers] = useState<AppUser[]>([]);
+  // ── Master data (static, loaded once) ─────────────────────
+  const [allUsers, setAllUsers] = useState<AppUser[]>([]);
+  const [allCompanies, setAllCompanies] = useState<Company[]>([]);
+  const [allCostCenters, setAllCostCenters] = useState<CostCenter[]>([]);
+  const [allPlans, setAllPlans] = useState<Plan[]>([]);
   const [isLoadingMaster, setIsLoadingMaster] = useState(true);
 
   useEffect(() => {
-    const loadMaster = async () => {
+    const load = async () => {
       setIsLoadingMaster(true);
-      const [ccRes, usersRes] = await Promise.all([
-        supabase.from("v_cost_center_details").select("*").eq("is_active", true),
-        supabase.from("app_users").select("user_id, full_name, email, cost_center_code, is_active").eq("is_active", true),
+      const [uRes, coRes, ccRes, pRes] = await Promise.all([
+        supabase.from("users").select("id, full_name, email, is_active").eq("is_active", true),
+        supabase.from("companies").select("company_id, company_name"),
+        supabase.from("cost_centers").select("cost_center_id, cost_center_name, company_id, plan_id"),
+        supabase.from("plans").select("plan_id, plan_name"),
       ]);
-      if (ccRes.data) setCcDetails(ccRes.data as CostCenterDetail[]);
-      if (usersRes.data) setAppUsers(usersRes.data as AppUser[]);
+      if (uRes.data) setAllUsers(uRes.data as AppUser[]);
+      if (coRes.data) setAllCompanies(coRes.data as Company[]);
+      if (ccRes.data) setAllCostCenters(ccRes.data as CostCenter[]);
+      if (pRes.data) setAllPlans(pRes.data as Plan[]);
       setIsLoadingMaster(false);
     };
-    loadMaster();
+    load();
   }, []);
 
   // ── Login ──────────────────────────────────────────────────
   const [loggedInUser, setLoggedInUser] = useState<AppUser | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [userMapping, setUserMapping] = useState<UserMapping[]>([]);
 
   const handleLogin = async () => {
     setIsLoggingIn(true);
-    await new Promise((r) => setTimeout(r, 700));
-    const active = appUsers.filter((u) => u.is_active);
+    await new Promise((r) => setTimeout(r, 600));
+    const active = allUsers.filter((u) => u.is_active);
     if (!active.length) {
       toast({ title: "Lỗi", description: "Không có kế toán nào trong hệ thống.", variant: "destructive" });
       setIsLoggingIn(false);
       return;
     }
     const user = active[Math.floor(Math.random() * active.length)];
+
+    // Load user's mapping
+    const { data: mappingData } = await supabase
+      .from("users_mapping")
+      .select("id, user_id, company_id, plan_id, cost_center_id")
+      .eq("user_id", user.id);
+
     setLoggedInUser(user);
+    setUserMapping(mappingData as UserMapping[] ?? []);
+    // Reset dropdowns to "all"
+    setSelectedCompanyId(ALL);
+    setSelectedCCId(ALL);
+    setSelectedPlanId(ALL);
     setIsLoggingIn(false);
-    toast({ title: `Xin chào, ${user.full_name}!`, description: "Đăng nhập thành công." });
+    toast({ title: `Xin chào, ${user.full_name}!`, description: "Đã tải dữ liệu phân quyền." });
   };
 
-  const handleLogout = () => { setLoggedInUser(null); };
+  const handleLogout = () => {
+    setLoggedInUser(null);
+    setUserMapping([]);
+    setSelectedCompanyId(ALL);
+    setSelectedCCId(ALL);
+    setSelectedPlanId(ALL);
+  };
 
-  // ── Cascade dropdowns ──────────────────────────────────────
-  const [selectedPlanId, setSelectedPlanId] = useState<string>("");
-  const [selectedCompanyId, setSelectedCompanyId] = useState<string>("");
-  const [selectedCC, setSelectedCC] = useState<string>("");
+  // ── Derived dropdown options (scoped to user mapping) ─────
+  const [selectedCompanyId, setSelectedCompanyId] = useState<string>(ALL);
+  const [selectedCCId, setSelectedCCId] = useState<string>(ALL);
+  const [selectedPlanId, setSelectedPlanId] = useState<string>(ALL);
 
-  const khoiOptions: KhoiOption[] = Array.from(
-    new Map(ccDetails.map((r) => [r.plan_id, { plan_id: r.plan_id, plan_name: r.plan_name }])).values()
-  ).sort((a, b) => a.plan_id - b.plan_id);
+  // Companies the user can see
+  const userCompanyIds = [...new Set(userMapping.map((m) => m.company_id))];
+  const userCompanies = allCompanies
+    .filter((c) => userCompanyIds.includes(c.company_id))
+    .sort((a, b) => a.company_id.localeCompare(b.company_id));
 
-  const companiesForKhoi: CompanyOption[] = selectedPlanId
-    ? Array.from(
-        new Map(
-          ccDetails
-            .filter((r) => r.plan_id === Number(selectedPlanId))
-            .map((r) => [r.company_id, { company_id: r.company_id, company_name: r.company_name }])
-        ).values()
-      ).sort((a, b) => a.company_id - b.company_id)
-    : [];
+  // Cost centers: filter mapping by selected company
+  const mappingForCompany = selectedCompanyId === ALL
+    ? userMapping
+    : userMapping.filter((m) => m.company_id === selectedCompanyId);
 
-  const ccForCompany: CostCenterDetail[] = selectedPlanId && selectedCompanyId
-    ? ccDetails.filter((r) => r.plan_id === Number(selectedPlanId) && r.company_id === Number(selectedCompanyId))
-    : [];
+  const userCCIds = [...new Set(mappingForCompany.map((m) => m.cost_center_id))];
+  const userCostCenters = allCostCenters
+    .filter((cc) => userCCIds.includes(cc.cost_center_id))
+    .sort((a, b) => a.cost_center_id.localeCompare(b.cost_center_id));
 
-  const handleKhoiChange = (val: string) => { setSelectedPlanId(val); setSelectedCompanyId(""); setSelectedCC(""); };
-  const handleCtyChange = (val: string) => { setSelectedCompanyId(val); setSelectedCC(""); };
+  // Plans: filter mapping by selected company
+  const userPlanIds = [...new Set(mappingForCompany.map((m) => m.plan_id))];
+  const userPlans = allPlans
+    .filter((p) => userPlanIds.includes(p.plan_id))
+    .sort((a, b) => a.plan_id - b.plan_id);
 
-  const selectedKhoiLabel = khoiOptions.find((k) => String(k.plan_id) === selectedPlanId)?.plan_name ?? "";
-  const selectedCtyObj = companiesForKhoi.find((c) => String(c.company_id) === selectedCompanyId);
-  const selectedCCObj = ccForCompany.find((cc) => cc.cost_center_code === selectedCC);
+  const handleCompanyChange = (val: string) => {
+    setSelectedCompanyId(val);
+    setSelectedCCId(ALL);
+    setSelectedPlanId(ALL);
+  };
+
+  // Resolved labels for display
+  const selectedCompany = userCompanies.find((c) => c.company_id === selectedCompanyId);
+  const selectedCC = userCostCenters.find((cc) => cc.cost_center_id === selectedCCId);
+  const selectedPlan = userPlans.find((p) => String(p.plan_id) === selectedPlanId);
+
+  // For submit: resolve actual values (if "all" but only 1 option, auto-use it)
+  const resolvedCompanyId = selectedCompanyId !== ALL ? selectedCompanyId
+    : userCompanies.length === 1 ? userCompanies[0].company_id : null;
+  const resolvedCCId = selectedCCId !== ALL ? selectedCCId
+    : userCostCenters.length === 1 ? userCostCenters[0].cost_center_id : null;
 
   // ── File upload ────────────────────────────────────────────
   const [fileName, setFileName] = useState<string>("");
@@ -180,7 +208,9 @@ export default function UploadPage() {
       setValidationStatus("valid");
       toast({ title: "✓ File hợp lệ", description: `${jsonData.length.toLocaleString()} dòng dữ liệu.` });
     } catch {
-      setValidationStatus("invalid"); setValidationError("Không thể đọc file. Hãy kiểm tra lại định dạng."); setRows([]); setHeaders([]);
+      setValidationStatus("invalid");
+      setValidationError("Không thể đọc file. Hãy kiểm tra lại định dạng.");
+      setRows([]); setHeaders([]);
     }
   }, [toast]);
 
@@ -191,7 +221,6 @@ export default function UploadPage() {
     e.preventDefault(); setIsDragging(false);
     const file = e.dataTransfer.files?.[0]; if (file) parseFile(file);
   };
-
   const handleClearFile = () => {
     setFileName(""); setFileSize(0); setTotalRows(0);
     setRows([]); setHeaders([]); setValidationStatus("idle"); setValidationError("");
@@ -199,23 +228,34 @@ export default function UploadPage() {
 
   // ── Submit ─────────────────────────────────────────────────
   const handleSubmit = async () => {
-    if (!loggedInUser) { toast({ title: "Vui lòng đăng nhập trước.", variant: "destructive" }); return; }
-    if (!selectedPlanId || !selectedCompanyId || !selectedCC) { toast({ title: "Vui lòng chọn đủ Khối → Công ty → Cost Center.", variant: "destructive" }); return; }
-    if (validationStatus !== "valid" || !rows.length) { toast({ title: "Vui lòng upload file hợp lệ.", variant: "destructive" }); return; }
+    if (!loggedInUser) {
+      toast({ title: "Vui lòng đăng nhập trước.", variant: "destructive" }); return;
+    }
+    if (!resolvedCompanyId) {
+      toast({ title: "Vui lòng chọn Công ty cụ thể trước khi submit.", variant: "destructive" }); return;
+    }
+    if (!resolvedCCId) {
+      toast({ title: "Vui lòng chọn Cost Center cụ thể trước khi submit.", variant: "destructive" }); return;
+    }
+    if (validationStatus !== "valid" || !rows.length) {
+      toast({ title: "Vui lòng upload file hợp lệ.", variant: "destructive" }); return;
+    }
 
     setIsSubmitting(true);
     try {
       const batch: UploadBatchInsert = {
         upload_date: new Date().toISOString().split("T")[0],
         accountant_name: loggedInUser.full_name,
-        company_id: Number(selectedCompanyId),
-        cost_center_code: selectedCC,
-        bp: null, file_name: fileName,
+        company_id: resolvedCompanyId,
+        cost_center_code: resolvedCCId,
+        bp: selectedPlanId !== ALL ? selectedPlanId : null,
+        file_name: fileName,
         file_type: fileName.split(".").pop()?.toLowerCase() ?? "unknown",
         total_rows: totalRows, preview_rows: Math.min(rows.length, 200),
-        status: "submitted", uploaded_by: loggedInUser.user_id, note: null,
+        status: "submitted", uploaded_by: loggedInUser.id, note: null,
       };
-      const { data: batchData, error: batchError } = await supabase.from("upload_batches").insert(batch).select("batch_id").single();
+      const { data: batchData, error: batchError } = await supabase
+        .from("upload_batches").insert(batch).select("batch_id").single();
       if (batchError) throw batchError;
 
       const batchId = batchData.batch_id as string;
@@ -244,16 +284,20 @@ export default function UploadPage() {
       toast({ title: "Submit thành công!", description: `${totalRows.toLocaleString()} dòng đã được lưu.` });
       handleClearFile();
     } catch (err) {
-      toast({ title: "Submit thất bại", description: err instanceof Error ? err.message : "Lỗi không xác định", variant: "destructive" });
+      toast({
+        title: "Submit thất bại",
+        description: err instanceof Error ? err.message : "Lỗi không xác định",
+        variant: "destructive",
+      });
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const canSubmit = !!loggedInUser && !!selectedCC && validationStatus === "valid" && !isSubmitting;
-  const step1Done = !!selectedPlanId;
-  const step2Done = !!selectedCompanyId;
-  const step3Done = !!selectedCC;
+  const canSubmit = !!loggedInUser && !!resolvedCompanyId && !!resolvedCCId
+    && validationStatus === "valid" && !isSubmitting;
+
+  const notLoggedIn = !loggedInUser;
 
   return (
     <div className="min-h-screen bg-[#f4f6fb]">
@@ -277,7 +321,6 @@ export default function UploadPage() {
                 <span className="hidden sm:inline">Đang tải...</span>
               </span>
             )}
-
             {loggedInUser ? (
               <div className="flex items-center gap-2">
                 <div className="flex items-center gap-2 bg-primary/8 border border-primary/15 rounded-full pl-2 pr-3 py-1.5">
@@ -316,9 +359,7 @@ export default function UploadPage() {
           </div>
           <div className={cn(
             "flex items-center gap-2 rounded-xl px-4 py-2.5 shadow-xs border transition-all duration-200",
-            loggedInUser
-              ? "bg-emerald-50 border-emerald-200"
-              : "bg-white border-border/60"
+            loggedInUser ? "bg-emerald-50 border-emerald-200" : "bg-white border-border/60"
           )}>
             <UserCircle2 className={cn("w-3.5 h-3.5", loggedInUser ? "text-emerald-600" : "text-muted-foreground")} />
             <span className="text-xs text-muted-foreground">Kế toán</span>
@@ -329,69 +370,121 @@ export default function UploadPage() {
           </div>
         </div>
 
-        {/* ── Step card: Chọn đơn vị ── */}
+        {/* ── Phân loại đơn vị ── */}
         <div className="bg-white border border-border/60 rounded-2xl shadow-sm overflow-hidden">
-          <div className="px-6 pt-5 pb-1 border-b border-border/40">
-            <div className="flex items-center gap-2 mb-0.5">
-              <Layers3 className="w-4 h-4 text-primary" />
-              <h2 className="text-sm font-semibold text-foreground">Phân loại đơn vị</h2>
+          <div className="px-6 pt-5 pb-4 border-b border-border/40 flex items-center justify-between">
+            <div>
+              <div className="flex items-center gap-2">
+                <Layers3 className="w-4 h-4 text-primary" />
+                <h2 className="text-sm font-semibold text-foreground">Phân loại đơn vị</h2>
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {notLoggedIn
+                  ? "Đăng nhập để xem danh sách đơn vị được phân quyền"
+                  : `${userMapping.length} cost center được phân quyền`}
+              </p>
             </div>
-            <p className="text-xs text-muted-foreground pb-4">Chọn lần lượt Khối → Công ty → Cost Center</p>
+            {/* Summary breadcrumb */}
+            {loggedInUser && (selectedCompanyId !== ALL || selectedCCId !== ALL || selectedPlanId !== ALL) && (
+              <div className="hidden sm:flex items-center gap-1 text-xs bg-primary/5 border border-primary/15 rounded-lg px-3 py-1.5">
+                {selectedCompanyId !== ALL && (
+                  <><Building2 className="w-3 h-3 text-primary" />
+                  <span className="font-medium text-primary">{selectedCompany?.company_name ?? selectedCompanyId}</span></>
+                )}
+                {selectedCCId !== ALL && (
+                  <><ChevronRight className="w-3 h-3 text-primary/50" />
+                  <span className="font-mono text-primary text-[11px]">[{selectedCCId}]</span></>
+                )}
+                {selectedPlanId !== ALL && (
+                  <><ChevronRight className="w-3 h-3 text-primary/50" />
+                  <span className="text-primary">{selectedPlan?.plan_name}</span></>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="px-6 py-5">
-            {/* Dropdowns */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="space-y-2">
-                <Label className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
-                  <Layers3 className="w-3.5 h-3.5 text-primary" /> Khối kinh doanh
-                </Label>
-                <Select value={selectedPlanId} onValueChange={handleKhoiChange} disabled={isLoadingMaster}>
-                  <SelectTrigger data-testid="select-khoi"
-                    className="h-10 rounded-xl border-border/70 bg-[#f8f9fc] hover:bg-white focus:bg-white transition-colors">
-                    <SelectValue placeholder={isLoadingMaster ? "Đang tải..." : "Chọn khối..."} />
-                  </SelectTrigger>
-                  <SelectContent className="rounded-xl">
-                    {khoiOptions.map((k) => (
-                      <SelectItem key={k.plan_id} value={String(k.plan_id)}>{k.plan_name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
+              {/* Công ty */}
               <div className="space-y-2">
                 <Label className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
                   <Building2 className="w-3.5 h-3.5 text-primary" /> Công ty
                 </Label>
-                <Select value={selectedCompanyId} onValueChange={handleCtyChange} disabled={!selectedPlanId}>
+                <Select
+                  value={selectedCompanyId}
+                  onValueChange={handleCompanyChange}
+                  disabled={notLoggedIn || isLoggingIn}
+                >
                   <SelectTrigger data-testid="select-cty"
                     className={cn("h-10 rounded-xl border-border/70 transition-colors",
-                      !selectedPlanId ? "bg-muted/40 opacity-60" : "bg-[#f8f9fc] hover:bg-white focus:bg-white")}>
-                    <SelectValue placeholder={selectedPlanId ? "Chọn công ty..." : "← Chọn khối trước"} />
+                      notLoggedIn ? "bg-muted/40 opacity-60" : "bg-[#f8f9fc] hover:bg-white focus:bg-white")}>
+                    <SelectValue placeholder="Đăng nhập trước..." />
                   </SelectTrigger>
                   <SelectContent className="rounded-xl">
-                    {companiesForKhoi.map((c) => (
-                      <SelectItem key={c.company_id} value={String(c.company_id)}>{c.company_name}</SelectItem>
+                    <SelectItem value={ALL}>
+                      <span className="text-muted-foreground font-medium">Tất cả ({userCompanies.length})</span>
+                    </SelectItem>
+                    {userCompanies.map((c) => (
+                      <SelectItem key={c.company_id} value={c.company_id}>
+                        <span className="font-mono text-primary text-[11px] mr-1.5">[{c.company_id}]</span>
+                        {c.company_name}
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
 
+              {/* Cost Center */}
               <div className="space-y-2">
                 <Label className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
                   <MapPin className="w-3.5 h-3.5 text-primary" /> Cost Center
                 </Label>
-                <Select value={selectedCC} onValueChange={setSelectedCC} disabled={!selectedCompanyId}>
+                <Select
+                  value={selectedCCId}
+                  onValueChange={setSelectedCCId}
+                  disabled={notLoggedIn || isLoggingIn}
+                >
                   <SelectTrigger data-testid="select-cc"
                     className={cn("h-10 rounded-xl border-border/70 transition-colors",
-                      !selectedCompanyId ? "bg-muted/40 opacity-60" : "bg-[#f8f9fc] hover:bg-white focus:bg-white")}>
-                    <SelectValue placeholder={selectedCompanyId ? "Chọn cost center..." : "← Chọn công ty trước"} />
+                      notLoggedIn ? "bg-muted/40 opacity-60" : "bg-[#f8f9fc] hover:bg-white focus:bg-white")}>
+                    <SelectValue placeholder="Đăng nhập trước..." />
                   </SelectTrigger>
                   <SelectContent className="rounded-xl">
-                    {ccForCompany.map((cc) => (
-                      <SelectItem key={cc.cost_center_code} value={cc.cost_center_code}>
-                        <span className="font-mono text-primary text-[11px] mr-1.5">[{cc.cost_center_code}]</span>
+                    <SelectItem value={ALL}>
+                      <span className="text-muted-foreground font-medium">Tất cả ({userCostCenters.length})</span>
+                    </SelectItem>
+                    {userCostCenters.map((cc) => (
+                      <SelectItem key={cc.cost_center_id} value={cc.cost_center_id}>
+                        <span className="font-mono text-primary text-[11px] mr-1.5">[{cc.cost_center_id}]</span>
                         {cc.cost_center_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Khối */}
+              <div className="space-y-2">
+                <Label className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
+                  <Layers3 className="w-3.5 h-3.5 text-primary" /> Khối kinh doanh
+                </Label>
+                <Select
+                  value={selectedPlanId}
+                  onValueChange={setSelectedPlanId}
+                  disabled={notLoggedIn || isLoggingIn}
+                >
+                  <SelectTrigger data-testid="select-khoi"
+                    className={cn("h-10 rounded-xl border-border/70 transition-colors",
+                      notLoggedIn ? "bg-muted/40 opacity-60" : "bg-[#f8f9fc] hover:bg-white focus:bg-white")}>
+                    <SelectValue placeholder="Đăng nhập trước..." />
+                  </SelectTrigger>
+                  <SelectContent className="rounded-xl">
+                    <SelectItem value={ALL}>
+                      <span className="text-muted-foreground font-medium">Tất cả ({userPlans.length})</span>
+                    </SelectItem>
+                    {userPlans.map((p) => (
+                      <SelectItem key={p.plan_id} value={String(p.plan_id)}>
+                        {p.plan_name}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -399,16 +492,12 @@ export default function UploadPage() {
               </div>
             </div>
 
-            {/* Selected path display */}
-            {step3Done && (
-              <div className="mt-4 flex items-center gap-1.5 flex-wrap text-xs bg-primary/5 border border-primary/15 rounded-xl px-4 py-2.5">
-                <span className="text-primary font-semibold">{selectedKhoiLabel}</span>
-                <ChevronRight className="w-3 h-3 text-primary/50" />
-                <span className="text-primary font-medium">{selectedCtyObj?.company_name}</span>
-                <ChevronRight className="w-3 h-3 text-primary/50" />
-                <span className="font-mono text-primary text-[11px]">[{selectedCC}]</span>
-                <span className="text-primary font-medium">{selectedCCObj?.cost_center_name}</span>
-              </div>
+            {/* Submit requires specific company + CC notice */}
+            {loggedInUser && (selectedCompanyId === ALL || selectedCCId === ALL) && (
+              <p className="mt-3 text-xs text-amber-600 flex items-center gap-1.5">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                Để submit dữ liệu, bạn cần chọn cụ thể Công ty và Cost Center.
+              </p>
             )}
           </div>
         </div>
@@ -420,7 +509,7 @@ export default function UploadPage() {
               <CloudUpload className="w-4 h-4 text-primary" />
               <h2 className="text-sm font-semibold text-foreground">Upload File dữ liệu</h2>
             </div>
-            <p className="text-xs text-muted-foreground mt-0.5">Hỗ trợ định dạng CSV, XLSX · Tối đa 200 dòng preview</p>
+            <p className="text-xs text-muted-foreground mt-0.5">Hỗ trợ CSV, XLSX · Tối đa 200 dòng preview</p>
           </div>
 
           <div className="p-6 space-y-4">
@@ -447,7 +536,9 @@ export default function UploadPage() {
                 </div>
                 <div className="text-center">
                   <p className="text-sm font-semibold text-foreground">Kéo thả file vào đây</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">hoặc <span className="text-primary font-medium underline underline-offset-2">chọn file</span> từ máy tính</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    hoặc <span className="text-primary font-medium underline underline-offset-2">chọn file</span> từ máy tính
+                  </p>
                 </div>
                 <div className="flex gap-2">
                   {["CSV", "XLSX", "XLS"].map((f) => (
@@ -456,7 +547,6 @@ export default function UploadPage() {
                 </div>
               </div>
             ) : (
-              /* File info card */
               <div className={cn(
                 "rounded-2xl border p-4 flex items-center gap-4 transition-all duration-200",
                 validationStatus === "valid" ? "border-emerald-200 bg-emerald-50/60" :
@@ -514,9 +604,7 @@ export default function UploadPage() {
                 <Upload className="w-3.5 h-3.5" />
                 {fileName ? "Thay file khác" : "Chọn file"}
               </Button>
-
               <div className="flex-1" />
-
               <Button
                 onClick={handleSubmit}
                 disabled={!canSubmit}
@@ -524,14 +612,12 @@ export default function UploadPage() {
                 className="gap-2 rounded-xl h-9 px-6 shadow-sm font-semibold"
                 data-testid="button-submit"
               >
-                {isSubmitting ? (
-                  <><Loader2 className="w-3.5 h-3.5 animate-spin" />Đang gửi...</>
-                ) : (
-                  <><ClipboardList className="w-3.5 h-3.5" />Submit</>
-                )}
+                {isSubmitting
+                  ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Đang gửi...</>
+                  : <><ClipboardList className="w-3.5 h-3.5" />Submit</>
+                }
               </Button>
             </div>
-
           </div>
         </div>
 
