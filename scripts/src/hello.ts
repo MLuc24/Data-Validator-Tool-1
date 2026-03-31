@@ -1,1 +1,1 @@
-console.log("Hello from @workspace/scripts");
+console.log("Hello Azure from @workspace/scripts");
