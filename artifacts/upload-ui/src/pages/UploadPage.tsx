@@ -385,52 +385,64 @@ export default function UploadPage() {
 
     setIsSubmitting(true);
     try {
-      const batch: UploadBatchInsert = {
-        upload_date: new Date().toISOString().split("T")[0],
-        accountant_name: loggedInUser.full_name,
-        company_id: resolvedCompanyId,
-        cost_center_code: resolvedCCId,
-        bp: selectedPlanId !== ALL ? selectedPlanId : null,
-        file_name: fileName,
-        file_type: fileName.split(".").pop()?.toLowerCase() ?? "unknown",
-        total_rows: totalRows, preview_rows: Math.min(rows.length, 200),
-        status: "submitted", uploaded_by: loggedInUser.id, note: null,
-      };
-      const { data: batchData, error: batchError } = await supabase
-        .from("upload_batches").insert(batch).select("batch_id").single();
-      if (batchError) throw batchError;
+      const resolvedPlanId = selectedPlanId !== ALL ? Number(selectedPlanId) : null;
 
-      const batchId = batchData.batch_id as string;
-      const uploadRows: UploadRowInsert[] = rows.map((row, idx) => ({
-        batch_id: batchId, row_number: idx + 1,
-        file_date: parseDate(row["Ngày"] as string),
-        system_code: row["Mã hệ thống"] ? String(row["Mã hệ thống"]) : null,
-        metric_group: row["Nhóm chỉ tiêu"] ? String(row["Nhóm chỉ tiêu"]) : null,
-        category_name: row["Khoản mục"] ? String(row["Khoản mục"]) : null,
-        subcategory_name: row["Tiểu mục"] ? String(row["Tiểu mục"]) : null,
-        amount: parseAmount(row["Số tiền"]),
-        attribute_name: row["Thuộc tính"] ? String(row["Thuộc tính"]) : null,
-        content_text: row["Nội dung"] ? String(row["Nội dung"]) : null,
-        company_name_in_file: row["Công ty"] ? String(row["Công ty"]) : null,
-        data_type: row["Loại dữ liệu"] ? String(row["Loại dữ liệu"]) : null,
-        block_name: row["Khối"] ? String(row["Khối"]) : null,
-        department_name: row["Bộ phận"] ? String(row["Bộ phận"]) : null,
-        raw_json: row as Record<string, unknown>,
-      }));
+      const batch: UploadBatchInsert = {
+        uploaded_by: loggedInUser.id,
+        file_name: fileName,
+        original_file_name: fileName,
+        note: null,
+        total_rows: totalRows,
+        success_rows: rows.length,
+        failed_rows: 0,
+        status: "submitted",
+      };
+
+      const { data: batchData, error: batchError } = await supabase
+        .from("upload_batches").insert(batch).select("id").single();
+      if (batchError) throw new Error(batchError.message || batchError.details || JSON.stringify(batchError));
+
+      const batchId = batchData.id as number;
+
+      const uploadRows: UploadRowInsert[] = rows.map((row, idx) => {
+        const maHt = row["Mã hệ thống"];
+        const maHtNum = maHt !== undefined && maHt !== null && maHt !== ""
+          ? parseInt(String(maHt).replace(/[^0-9]/g, ""), 10) || null
+          : null;
+        return {
+          batch_id: batchId,
+          row_no: idx + 1,
+          ngay: parseDate(row["Ngày"] as string),
+          ma_he_thong: maHtNum,
+          nhom_chi_tieu: row["Nhóm chỉ tiêu"] ? String(row["Nhóm chỉ tiêu"]) : null,
+          khoan_muc: row["Khoản mục"] ? String(row["Khoản mục"]) : null,
+          tieu_muc: row["Tiểu mục"] ? String(row["Tiểu mục"]) : null,
+          thuoc_tinh: row["Thuộc tính"] ? String(row["Thuộc tính"]) : null,
+          noi_dung: row["Nội dung"] ? String(row["Nội dung"]) : null,
+          cong_ty: row["Công ty"] ? String(row["Công ty"]) : null,
+          loai_du_lieu: row["Loại dữ liệu"] ? String(row["Loại dữ liệu"]) : null,
+          khoi: row["Khối"] ? String(row["Khối"]) : null,
+          bo_phan: row["Bộ phận"] ? String(row["Bộ phận"]) : null,
+          so_tien: parseAmount(row["Số tiền"]),
+          company_id: resolvedCompanyId,
+          plan_id: resolvedPlanId,
+          cost_center_id: resolvedCCId,
+          created_by: loggedInUser.id,
+          is_valid: true,
+          error_message: null,
+        };
+      });
 
       for (let i = 0; i < uploadRows.length; i += 500) {
         const { error } = await supabase.from("upload_rows").insert(uploadRows.slice(i, i + 500));
-        if (error) throw error;
+        if (error) throw new Error(error.message || error.details || JSON.stringify(error));
       }
 
       toast({ title: "Submit thành công!", description: `${totalRows.toLocaleString()} dòng đã được lưu.` });
       handleClearFile();
     } catch (err) {
-      toast({
-        title: "Submit thất bại",
-        description: err instanceof Error ? err.message : "Lỗi không xác định",
-        variant: "destructive",
-      });
+      const msg = err instanceof Error ? err.message : JSON.stringify(err);
+      toast({ title: "Submit thất bại", description: msg, variant: "destructive" });
     } finally {
       setIsSubmitting(false);
     }

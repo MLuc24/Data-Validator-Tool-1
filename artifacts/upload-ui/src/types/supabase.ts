@@ -31,34 +31,35 @@ export interface Plan {
 }
 
 export interface UploadBatchInsert {
-  upload_date: string;
-  accountant_name: string;
-  company_id: string;
-  cost_center_code: string;
-  bp: string | null;
+  uploaded_by: number;
   file_name: string;
-  file_type: string;
+  original_file_name?: string | null;
+  note?: string | null;
   total_rows: number;
-  preview_rows: number;
-  status: "submitted";
-  uploaded_by: number | null;
-  note: string | null;
+  success_rows: number;
+  failed_rows: number;
+  status: string;
 }
 
 export interface UploadRowInsert {
-  batch_id: string;
-  row_number: number;
-  file_date: string | null;
-  system_code: string | null;
-  metric_group: string | null;
-  category_name: string | null;
-  subcategory_name: string | null;
-  amount: number | null;
-  attribute_name: string | null;
-  content_text: string | null;
-  company_name_in_file: string | null;
-  data_type: string | null;
-  block_name: string | null;
-  department_name: string | null;
-  raw_json: Record<string, unknown> | null;
+  batch_id: number;
+  row_no: number;
+  ngay: string | null;
+  ma_he_thong: number | null;
+  nhom_chi_tieu: string | null;
+  khoan_muc: string | null;
+  tieu_muc: string | null;
+  thuoc_tinh: string | null;
+  noi_dung: string | null;
+  cong_ty: string | null;
+  loai_du_lieu: string | null;
+  khoi: string | null;
+  bo_phan: string | null;
+  so_tien: number | null;
+  company_id: string | null;
+  plan_id: number | null;
+  cost_center_id: string | null;
+  created_by: number;
+  is_valid: boolean;
+  error_message: string | null;
 }
