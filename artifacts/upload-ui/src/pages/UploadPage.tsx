@@ -436,8 +436,7 @@ export default function UploadPage() {
     }
   };
 
-  const canSubmit = !!loggedInUser && !!resolvedCompanyId && !!resolvedCCId
-    && validationStatus === "valid" && !isSubmitting;
+  const canSubmit = !isSubmitting;
 
   const notLoggedIn = !loggedInUser;
 
@@ -760,7 +759,7 @@ export default function UploadPage() {
               >
                 {isSubmitting
                   ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Đang gửi...</>
-                  : <><ClipboardList className="w-3.5 h-3.5" />Submit dữ liệu</>
+                  : <><ClipboardList className="w-3.5 h-3.5" />Submit</>
                 }
               </Button>
             </div>
