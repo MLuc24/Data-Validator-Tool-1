@@ -427,273 +427,200 @@ export default function UploadPage() {
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 space-y-5">
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-4 space-y-4">
 
-        {/* ── Info strip ── */}
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2 bg-white border border-border/60 rounded-xl px-4 py-2.5 shadow-xs">
-            <Calendar className="w-3.5 h-3.5 text-primary" />
-            <span className="text-xs text-muted-foreground">Ngày</span>
-            <span className="text-xs font-semibold text-foreground ml-1" data-testid="text-date">{today}</span>
+        {/* ── Top row: info strip (compact, inline) ── */}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1.5 bg-white border border-border/60 rounded-lg px-3 py-1.5 shadow-xs">
+            <Calendar className="w-3 h-3 text-primary" />
+            <span className="text-[11px] text-muted-foreground">Ngày</span>
+            <span className="text-[11px] font-semibold text-foreground ml-0.5" data-testid="text-date">{today}</span>
           </div>
           <div className={cn(
-            "flex items-center gap-2 rounded-xl px-4 py-2.5 shadow-xs border transition-all duration-200",
+            "flex items-center gap-1.5 rounded-lg px-3 py-1.5 shadow-xs border transition-all duration-200",
             loggedInUser ? "bg-emerald-50 border-emerald-200" : "bg-white border-border/60"
           )}>
-            <UserCircle2 className={cn("w-3.5 h-3.5", loggedInUser ? "text-emerald-600" : "text-muted-foreground")} />
-            <span className="text-xs text-muted-foreground">Kế toán</span>
-            <span className={cn("text-xs font-semibold ml-1", loggedInUser ? "text-emerald-700" : "text-muted-foreground italic")}
+            <UserCircle2 className={cn("w-3 h-3", loggedInUser ? "text-emerald-600" : "text-muted-foreground")} />
+            <span className="text-[11px] text-muted-foreground">Kế toán</span>
+            <span className={cn("text-[11px] font-semibold ml-0.5", loggedInUser ? "text-emerald-700" : "text-muted-foreground italic")}
               data-testid="text-accountant">
               {loggedInUser?.full_name ?? "Chưa đăng nhập"}
             </span>
           </div>
+          {/* Summary breadcrumb when filters active */}
+          {loggedInUser && (selectedCompanyId !== ALL || selectedCCId !== ALL) && (
+            <div className="flex items-center gap-1 text-[11px] bg-primary/6 border border-primary/15 rounded-lg px-3 py-1.5">
+              {selectedCompanyId !== ALL && <span className="font-medium text-primary">{selectedCompany?.company_id}</span>}
+              {selectedCCId !== ALL && <><ChevronRight className="w-3 h-3 text-primary/40" /><span className="font-mono text-primary">{selectedCCId}</span></>}
+              {selectedPlanId !== ALL && <><ChevronRight className="w-3 h-3 text-primary/40" /><span className="text-primary">{selectedPlan?.plan_name}</span></>}
+            </div>
+          )}
         </div>
 
-        {/* ── Phân loại đơn vị ── */}
-        <div className="bg-white border border-border/60 rounded-2xl shadow-sm overflow-hidden">
-          <div className="px-6 pt-5 pb-4 border-b border-border/40 flex items-center justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <Layers3 className="w-4 h-4 text-primary" />
-                <h2 className="text-sm font-semibold text-foreground">Phân loại đơn vị</h2>
-              </div>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                {notLoggedIn
-                  ? "Đăng nhập để xem danh sách đơn vị được phân quyền"
-                  : `${userMapping.length} cost center được phân quyền`}
-              </p>
+        {/* ── Main 2-column row: [Dropdowns | Upload+Submit] ── */}
+        <div className="flex gap-4 items-stretch">
+
+          {/* LEFT: Phân loại đơn vị (wider) */}
+          <div className="flex-1 bg-white border border-border/60 rounded-2xl shadow-sm overflow-hidden">
+            <div className="px-5 pt-4 pb-3 border-b border-border/40 flex items-center gap-2">
+              <Layers3 className="w-3.5 h-3.5 text-primary" />
+              <h2 className="text-xs font-semibold text-foreground">Phân loại đơn vị</h2>
+              {loggedInUser && (
+                <span className="ml-auto text-[10px] text-muted-foreground">{userMapping.length} CC được phân quyền</span>
+              )}
             </div>
-            {/* Summary breadcrumb */}
-            {loggedInUser && (selectedCompanyId !== ALL || selectedCCId !== ALL || selectedPlanId !== ALL) && (
-              <div className="hidden sm:flex items-center gap-1 text-xs bg-primary/5 border border-primary/15 rounded-lg px-3 py-1.5">
-                {selectedCompanyId !== ALL && (
-                  <><Building2 className="w-3 h-3 text-primary" />
-                  <span className="font-medium text-primary">{selectedCompany?.company_name ?? selectedCompanyId}</span></>
-                )}
-                {selectedCCId !== ALL && (
-                  <><ChevronRight className="w-3 h-3 text-primary/50" />
-                  <span className="font-mono text-primary text-[11px]">[{selectedCCId}]</span></>
-                )}
-                {selectedPlanId !== ALL && (
-                  <><ChevronRight className="w-3 h-3 text-primary/50" />
-                  <span className="text-primary">{selectedPlan?.plan_name}</span></>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="px-6 py-5">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              {/* Công ty */}
-              <div className="space-y-2">
-                <Label className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
-                  <Building2 className="w-3.5 h-3.5 text-primary" /> Công ty
-                </Label>
-                <Select
-                  value={selectedCompanyId}
-                  onValueChange={handleCompanyChange}
-                  disabled={notLoggedIn || isLoggingIn}
-                >
-                  <SelectTrigger data-testid="select-cty"
-                    className={cn("h-10 rounded-xl border-border/70 transition-colors",
-                      notLoggedIn ? "bg-muted/40 opacity-60" : "bg-[#f8f9fc] hover:bg-white focus:bg-white")}>
-                    <SelectValue placeholder="Đăng nhập trước..." />
-                  </SelectTrigger>
-                  <SelectContent className="rounded-xl">
-                    <SelectItem value={ALL}>
-                      <span className="text-muted-foreground font-medium">Tất cả ({userCompanies.length})</span>
-                    </SelectItem>
-                    {userCompanies.map((c) => (
-                      <SelectItem key={c.company_id} value={c.company_id}>
-                        <span className="font-mono text-primary text-[11px] mr-1.5">[{c.company_id}]</span>
-                        {c.company_name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Cost Center */}
-              <div className="space-y-2">
-                <Label className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
-                  <MapPin className="w-3.5 h-3.5 text-primary" /> Cost Center
-                </Label>
-                <Select
-                  value={selectedCCId}
-                  onValueChange={setSelectedCCId}
-                  disabled={notLoggedIn || isLoggingIn}
-                >
-                  <SelectTrigger data-testid="select-cc"
-                    className={cn("h-10 rounded-xl border-border/70 transition-colors",
-                      notLoggedIn ? "bg-muted/40 opacity-60" : "bg-[#f8f9fc] hover:bg-white focus:bg-white")}>
-                    <SelectValue placeholder="Đăng nhập trước..." />
-                  </SelectTrigger>
-                  <SelectContent className="rounded-xl">
-                    <SelectItem value={ALL}>
-                      <span className="text-muted-foreground font-medium">Tất cả ({userCostCenters.length})</span>
-                    </SelectItem>
-                    {userCostCenters.map((cc) => (
-                      <SelectItem key={cc.cost_center_id} value={cc.cost_center_id}>
-                        <span className="font-mono text-primary text-[11px] mr-1.5">[{cc.cost_center_id}]</span>
-                        {cc.cost_center_name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Khối */}
-              <div className="space-y-2">
-                <Label className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
-                  <Layers3 className="w-3.5 h-3.5 text-primary" /> Khối kinh doanh
-                </Label>
-                <Select
-                  value={selectedPlanId}
-                  onValueChange={setSelectedPlanId}
-                  disabled={notLoggedIn || isLoggingIn}
-                >
-                  <SelectTrigger data-testid="select-khoi"
-                    className={cn("h-10 rounded-xl border-border/70 transition-colors",
-                      notLoggedIn ? "bg-muted/40 opacity-60" : "bg-[#f8f9fc] hover:bg-white focus:bg-white")}>
-                    <SelectValue placeholder="Đăng nhập trước..." />
-                  </SelectTrigger>
-                  <SelectContent className="rounded-xl">
-                    <SelectItem value={ALL}>
-                      <span className="text-muted-foreground font-medium">Tất cả ({userPlans.length})</span>
-                    </SelectItem>
-                    {userPlans.map((p) => (
-                      <SelectItem key={p.plan_id} value={String(p.plan_id)}>
-                        {p.plan_name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            {/* Submit requires specific company + CC notice */}
-            {loggedInUser && (selectedCompanyId === ALL || selectedCCId === ALL) && (
-              <p className="mt-3 text-xs text-amber-600 flex items-center gap-1.5">
-                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                Để submit dữ liệu, bạn cần chọn cụ thể Công ty và Cost Center.
-              </p>
-            )}
-          </div>
-        </div>
-
-        {/* ── Upload card ── */}
-        <div className="bg-white border border-border/60 rounded-2xl shadow-sm overflow-hidden">
-          <div className="px-6 pt-5 pb-4 border-b border-border/40">
-            <div className="flex items-center gap-2">
-              <CloudUpload className="w-4 h-4 text-primary" />
-              <h2 className="text-sm font-semibold text-foreground">Upload File dữ liệu</h2>
-            </div>
-            <p className="text-xs text-muted-foreground mt-0.5">Hỗ trợ CSV, XLSX · Tối đa 200 dòng preview</p>
-          </div>
-
-          <div className="p-6 space-y-4">
-            {/* Drop zone */}
-            {!fileName ? (
-              <div
-                onClick={() => fileInputRef.current?.click()}
-                onDrop={handleDrop}
-                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-                onDragLeave={() => setIsDragging(false)}
-                data-testid="dropzone"
-                className={cn(
-                  "border-2 border-dashed rounded-2xl p-10 flex flex-col items-center gap-3 cursor-pointer transition-all duration-200",
-                  isDragging
-                    ? "border-primary bg-primary/5 scale-[1.01]"
-                    : "border-border hover:border-primary/50 hover:bg-primary/3"
-                )}
-              >
-                <div className={cn(
-                  "w-14 h-14 rounded-2xl flex items-center justify-center transition-colors",
-                  isDragging ? "bg-primary/15" : "bg-muted"
-                )}>
-                  <CloudUpload className={cn("w-7 h-7", isDragging ? "text-primary" : "text-muted-foreground")} />
+            <div className="px-5 py-4 space-y-3">
+              <div className="grid grid-cols-3 gap-3">
+                {/* Công ty */}
+                <div className="space-y-1.5">
+                  <Label className="flex items-center gap-1 text-[11px] font-semibold text-foreground">
+                    <Building2 className="w-3 h-3 text-primary" /> Công ty
+                  </Label>
+                  <Select value={selectedCompanyId} onValueChange={handleCompanyChange} disabled={notLoggedIn || isLoggingIn}>
+                    <SelectTrigger data-testid="select-cty"
+                      className={cn("h-9 rounded-xl border-border/70 text-xs transition-colors",
+                        notLoggedIn ? "bg-muted/40 opacity-60" : "bg-[#f8f9fc] hover:bg-white focus:bg-white")}>
+                      <SelectValue placeholder="Đăng nhập trước..." />
+                    </SelectTrigger>
+                    <SelectContent className="rounded-xl">
+                      <SelectItem value={ALL}><span className="text-muted-foreground font-medium">Tất cả ({userCompanies.length})</span></SelectItem>
+                      {userCompanies.map((c) => (
+                        <SelectItem key={c.company_id} value={c.company_id}>
+                          <span className="font-mono text-primary text-[10px] mr-1">[{c.company_id}]</span>{c.company_name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
-                <div className="text-center">
-                  <p className="text-sm font-semibold text-foreground">Kéo thả file vào đây</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    hoặc <span className="text-primary font-medium underline underline-offset-2">chọn file</span> từ máy tính
-                  </p>
+                {/* Cost Center */}
+                <div className="space-y-1.5">
+                  <Label className="flex items-center gap-1 text-[11px] font-semibold text-foreground">
+                    <MapPin className="w-3 h-3 text-primary" /> Cost Center
+                  </Label>
+                  <Select value={selectedCCId} onValueChange={setSelectedCCId} disabled={notLoggedIn || isLoggingIn}>
+                    <SelectTrigger data-testid="select-cc"
+                      className={cn("h-9 rounded-xl border-border/70 text-xs transition-colors",
+                        notLoggedIn ? "bg-muted/40 opacity-60" : "bg-[#f8f9fc] hover:bg-white focus:bg-white")}>
+                      <SelectValue placeholder="Đăng nhập trước..." />
+                    </SelectTrigger>
+                    <SelectContent className="rounded-xl">
+                      <SelectItem value={ALL}><span className="text-muted-foreground font-medium">Tất cả ({userCostCenters.length})</span></SelectItem>
+                      {userCostCenters.map((cc) => (
+                        <SelectItem key={cc.cost_center_id} value={cc.cost_center_id}>
+                          <span className="font-mono text-primary text-[10px] mr-1">[{cc.cost_center_id}]</span>{cc.cost_center_name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
-                <div className="flex gap-2">
-                  {["CSV", "XLSX", "XLS"].map((f) => (
-                    <span key={f} className="text-[10px] font-mono bg-muted px-2 py-0.5 rounded-md text-muted-foreground">.{f}</span>
-                  ))}
+                {/* Khối */}
+                <div className="space-y-1.5">
+                  <Label className="flex items-center gap-1 text-[11px] font-semibold text-foreground">
+                    <Layers3 className="w-3 h-3 text-primary" /> Khối kinh doanh
+                  </Label>
+                  <Select value={selectedPlanId} onValueChange={setSelectedPlanId} disabled={notLoggedIn || isLoggingIn}>
+                    <SelectTrigger data-testid="select-khoi"
+                      className={cn("h-9 rounded-xl border-border/70 text-xs transition-colors",
+                        notLoggedIn ? "bg-muted/40 opacity-60" : "bg-[#f8f9fc] hover:bg-white focus:bg-white")}>
+                      <SelectValue placeholder="Đăng nhập trước..." />
+                    </SelectTrigger>
+                    <SelectContent className="rounded-xl">
+                      <SelectItem value={ALL}><span className="text-muted-foreground font-medium">Tất cả ({userPlans.length})</span></SelectItem>
+                      {userPlans.map((p) => (
+                        <SelectItem key={p.plan_id} value={String(p.plan_id)}>{p.plan_name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
-            ) : (
-              <div className={cn(
-                "rounded-2xl border p-4 flex items-center gap-4 transition-all duration-200",
-                validationStatus === "valid" ? "border-emerald-200 bg-emerald-50/60" :
-                validationStatus === "invalid" ? "border-red-200 bg-red-50/60" :
-                "border-border bg-muted/30"
-              )}>
-                <div className={cn(
-                  "w-12 h-12 rounded-xl flex items-center justify-center shrink-0",
-                  validationStatus === "valid" ? "bg-emerald-100" :
-                  validationStatus === "invalid" ? "bg-red-100" : "bg-muted"
-                )}>
-                  {validationStatus === "validating" ? (
-                    <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
-                  ) : validationStatus === "valid" ? (
-                    <CheckCircle2 className="w-6 h-6 text-emerald-600" />
-                  ) : validationStatus === "invalid" ? (
-                    <AlertCircle className="w-6 h-6 text-red-500" />
-                  ) : (
-                    <FileSpreadsheet className="w-6 h-6 text-muted-foreground" />
+
+              {loggedInUser && (selectedCompanyId === ALL || selectedCCId === ALL) && (
+                <p className="text-[11px] text-amber-600 flex items-center gap-1">
+                  <AlertCircle className="w-3 h-3 shrink-0" />
+                  Cần chọn cụ thể Công ty và Cost Center để submit.
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* RIGHT: Upload + Submit (compact) */}
+          <div className="w-72 shrink-0 bg-white border border-border/60 rounded-2xl shadow-sm overflow-hidden flex flex-col">
+            <div className="px-5 pt-4 pb-3 border-b border-border/40 flex items-center gap-2">
+              <CloudUpload className="w-3.5 h-3.5 text-primary" />
+              <h2 className="text-xs font-semibold text-foreground">Upload file</h2>
+              <span className="ml-auto text-[10px] text-muted-foreground">CSV · XLSX</span>
+            </div>
+            <div className="p-4 flex flex-col gap-3 flex-1">
+              <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls"
+                className="hidden" onChange={handleFileChange} data-testid="input-file" />
+
+              {/* Compact drop zone / file status */}
+              {!fileName ? (
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  onDrop={handleDrop}
+                  onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                  onDragLeave={() => setIsDragging(false)}
+                  data-testid="dropzone"
+                  className={cn(
+                    "border-2 border-dashed rounded-xl flex flex-col items-center gap-2 py-6 cursor-pointer transition-all duration-200",
+                    isDragging ? "border-primary bg-primary/5" : "border-border hover:border-primary/50 hover:bg-muted/30"
                   )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-foreground truncate">{fileName}</p>
-                  <div className="flex items-center gap-3 mt-0.5">
-                    <span className="text-xs text-muted-foreground">{(fileSize / 1024).toFixed(1)} KB</span>
-                    {validationStatus === "valid" && (
-                      <span className="text-xs text-emerald-600 font-medium">{totalRows.toLocaleString()} dòng · Hợp lệ</span>
-                    )}
-                    {validationStatus === "invalid" && (
-                      <span className="text-xs text-red-500 font-medium">Lỗi định dạng</span>
-                    )}
-                    {validationStatus === "validating" && (
-                      <span className="text-xs text-muted-foreground">Đang kiểm tra...</span>
-                    )}
+                >
+                  <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center", isDragging ? "bg-primary/15" : "bg-muted")}>
+                    <CloudUpload className={cn("w-5 h-5", isDragging ? "text-primary" : "text-muted-foreground")} />
                   </div>
-                  {validationStatus === "invalid" && validationError && (
-                    <p className="text-xs text-red-500 mt-1">{validationError}</p>
-                  )}
+                  <div className="text-center">
+                    <p className="text-xs font-semibold text-foreground">Kéo thả file</p>
+                    <p className="text-[11px] text-muted-foreground">hoặc <span className="text-primary underline underline-offset-2">chọn file</span></p>
+                  </div>
                 </div>
-                <Button variant="ghost" size="sm" onClick={handleClearFile}
-                  className="text-muted-foreground hover:text-foreground shrink-0 h-8 px-2 rounded-lg text-xs">
-                  Xóa
-                </Button>
-              </div>
-            )}
+              ) : (
+                <div className={cn(
+                  "rounded-xl border p-3 flex items-start gap-2.5 transition-all",
+                  validationStatus === "valid" ? "border-emerald-200 bg-emerald-50/60" :
+                  validationStatus === "invalid" ? "border-red-200 bg-red-50/60" : "border-border bg-muted/30"
+                )}>
+                  <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center shrink-0",
+                    validationStatus === "valid" ? "bg-emerald-100" :
+                    validationStatus === "invalid" ? "bg-red-100" : "bg-muted")}>
+                    {validationStatus === "validating" ? <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
+                     : validationStatus === "valid" ? <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                     : validationStatus === "invalid" ? <AlertCircle className="w-4 h-4 text-red-500" />
+                     : <FileSpreadsheet className="w-4 h-4 text-muted-foreground" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[11px] font-semibold text-foreground truncate">{fileName}</p>
+                    <p className="text-[10px] text-muted-foreground">{(fileSize / 1024).toFixed(1)} KB</p>
+                    {validationStatus === "valid" && <p className="text-[10px] text-emerald-600 font-medium">{totalRows.toLocaleString()} dòng · Hợp lệ</p>}
+                    {validationStatus === "invalid" && <p className="text-[10px] text-red-500">{validationError}</p>}
+                  </div>
+                  <button onClick={handleClearFile} className="text-muted-foreground hover:text-foreground text-[10px] shrink-0 mt-0.5">✕</button>
+                </div>
+              )}
 
-            <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls"
-              className="hidden" onChange={handleFileChange} data-testid="input-file" />
-
-            {/* Actions row */}
-            <div className="flex items-center gap-3 pt-1">
+              {/* Chọn file button */}
               <Button variant="outline" size="sm"
                 onClick={() => fileInputRef.current?.click()}
-                className="gap-2 rounded-xl h-9 border-border/70" data-testid="button-upload">
-                <Upload className="w-3.5 h-3.5" />
+                className="gap-1.5 rounded-xl h-8 border-border/70 text-xs w-full" data-testid="button-upload">
+                <Upload className="w-3 h-3" />
                 {fileName ? "Thay file khác" : "Chọn file"}
               </Button>
+
+              {/* Spacer to push submit to bottom */}
               <div className="flex-1" />
+
+              {/* Submit */}
               <Button
                 onClick={handleSubmit}
                 disabled={!canSubmit}
                 size="sm"
-                className="gap-2 rounded-xl h-9 px-6 shadow-sm font-semibold"
+                className="gap-1.5 rounded-xl h-9 w-full shadow-sm font-semibold text-xs"
                 data-testid="button-submit"
               >
                 {isSubmitting
                   ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Đang gửi...</>
-                  : <><ClipboardList className="w-3.5 h-3.5" />Submit</>
+                  : <><ClipboardList className="w-3.5 h-3.5" />Submit dữ liệu</>
                 }
               </Button>
             </div>
