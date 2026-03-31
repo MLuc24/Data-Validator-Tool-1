@@ -4,11 +4,12 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import {
   Upload, AlertCircle, CheckCircle2, Loader2,
   FileSpreadsheet, LogIn, LogOut, UserCircle2,
+  Building2, Layers3, MapPin, CloudUpload, ChevronRight,
+  Calendar, ClipboardList,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/lib/supabase";
@@ -44,6 +45,19 @@ function parseAmount(raw: string | number | undefined): number | null {
   return isNaN(n) ? null : n;
 }
 
+function StepBadge({ n, active, done }: { n: number; active: boolean; done: boolean }) {
+  return (
+    <div className={cn(
+      "w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 transition-all duration-200",
+      done ? "bg-primary text-primary-foreground shadow-sm" :
+      active ? "bg-primary/10 text-primary border-2 border-primary" :
+      "bg-muted text-muted-foreground border border-border"
+    )}>
+      {done ? <CheckCircle2 className="w-4 h-4" /> : n}
+    </div>
+  );
+}
+
 export default function UploadPage() {
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -71,15 +85,15 @@ export default function UploadPage() {
     loadMaster();
   }, []);
 
-  // ── Login state ────────────────────────────────────────────
+  // ── Login ──────────────────────────────────────────────────
   const [loggedInUser, setLoggedInUser] = useState<AppUser | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   const handleLogin = async () => {
     setIsLoggingIn(true);
-    await new Promise((r) => setTimeout(r, 600));
+    await new Promise((r) => setTimeout(r, 700));
     const active = appUsers.filter((u) => u.is_active);
-    if (active.length === 0) {
+    if (!active.length) {
       toast({ title: "Lỗi", description: "Không có kế toán nào trong hệ thống.", variant: "destructive" });
       setIsLoggingIn(false);
       return;
@@ -87,15 +101,12 @@ export default function UploadPage() {
     const user = active[Math.floor(Math.random() * active.length)];
     setLoggedInUser(user);
     setIsLoggingIn(false);
-    toast({ title: "Đăng nhập thành công", description: `Xin chào, ${user.full_name}!` });
+    toast({ title: `Xin chào, ${user.full_name}!`, description: "Đăng nhập thành công." });
   };
 
-  const handleLogout = () => {
-    setLoggedInUser(null);
-    toast({ title: "Đã đăng xuất" });
-  };
+  const handleLogout = () => { setLoggedInUser(null); };
 
-  // ── Cascade dropdowns (from Supabase data) ─────────────────
+  // ── Cascade dropdowns ──────────────────────────────────────
   const [selectedPlanId, setSelectedPlanId] = useState<string>("");
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>("");
   const [selectedCC, setSelectedCC] = useState<string>("");
@@ -115,28 +126,20 @@ export default function UploadPage() {
     : [];
 
   const ccForCompany: CostCenterDetail[] = selectedPlanId && selectedCompanyId
-    ? ccDetails.filter(
-        (r) => r.plan_id === Number(selectedPlanId) && r.company_id === Number(selectedCompanyId)
-      )
+    ? ccDetails.filter((r) => r.plan_id === Number(selectedPlanId) && r.company_id === Number(selectedCompanyId))
     : [];
 
-  const handleKhoiChange = (val: string) => {
-    setSelectedPlanId(val);
-    setSelectedCompanyId("");
-    setSelectedCC("");
-  };
-
-  const handleCtyChange = (val: string) => {
-    setSelectedCompanyId(val);
-    setSelectedCC("");
-  };
+  const handleKhoiChange = (val: string) => { setSelectedPlanId(val); setSelectedCompanyId(""); setSelectedCC(""); };
+  const handleCtyChange = (val: string) => { setSelectedCompanyId(val); setSelectedCC(""); };
 
   const selectedKhoiLabel = khoiOptions.find((k) => String(k.plan_id) === selectedPlanId)?.plan_name ?? "";
-  const selectedCtyLabel = companiesForKhoi.find((c) => String(c.company_id) === selectedCompanyId)?.company_name ?? "";
-  const selectedCCLabel = ccForCompany.find((cc) => cc.cost_center_code === selectedCC)?.cost_center_name ?? "";
+  const selectedCtyObj = companiesForKhoi.find((c) => String(c.company_id) === selectedCompanyId);
+  const selectedCCObj = ccForCompany.find((cc) => cc.cost_center_code === selectedCC);
 
   // ── File upload ────────────────────────────────────────────
   const [fileName, setFileName] = useState<string>("");
+  const [fileSize, setFileSize] = useState<number>(0);
+  const [totalRows, setTotalRows] = useState<number>(0);
   const [rows, setRows] = useState<RowData[]>([]);
   const [headers, setHeaders] = useState<string[]>([]);
   const [validationStatus, setValidationStatus] = useState<ValidationStatus>("idle");
@@ -149,10 +152,11 @@ export default function UploadPage() {
     if (ext !== "csv" && ext !== "xlsx" && ext !== "xls") {
       setValidationStatus("invalid");
       setValidationError("Chỉ chấp nhận file CSV hoặc XLSX/XLS.");
-      setRows([]); setHeaders([]); setFileName("");
+      setRows([]); setHeaders([]); setFileName(""); setFileSize(0);
       return;
     }
     setFileName(file.name);
+    setFileSize(file.size);
     setValidationStatus("validating");
     setValidationError("");
     try {
@@ -160,50 +164,44 @@ export default function UploadPage() {
       const wb = XLSX.read(buffer, { type: "array", cellDates: true });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const jsonData = XLSX.utils.sheet_to_json<RowData>(ws, { raw: false, dateNF: "dd/mm/yyyy" });
-      if (jsonData.length === 0) {
-        setValidationStatus("invalid");
-        setValidationError("File không có dữ liệu.");
-        setRows([]); setHeaders([]);
-        return;
+      if (!jsonData.length) {
+        setValidationStatus("invalid"); setValidationError("File không có dữ liệu."); setRows([]); setHeaders([]); return;
       }
       const fileHeaders = Object.keys(jsonData[0]);
       const missing = REQUIRED_COLUMNS.filter((col) => !fileHeaders.some((h) => h.trim() === col));
-      if (missing.length > 0) {
+      if (missing.length) {
         setValidationStatus("invalid");
-        setValidationError(`File thiếu các cột: ${missing.join(", ")}`);
-        setRows([]); setHeaders([]);
-        return;
+        setValidationError(`Thiếu ${missing.length} cột: ${missing.join(", ")}`);
+        setRows([]); setHeaders([]); return;
       }
+      setTotalRows(jsonData.length);
       setHeaders(REQUIRED_COLUMNS);
-      setRows(jsonData.slice(0, 100));
+      setRows(jsonData.slice(0, 200));
       setValidationStatus("valid");
-      toast({ title: "File hợp lệ", description: `Đọc được ${jsonData.length} dòng.` });
+      toast({ title: "✓ File hợp lệ", description: `${jsonData.length.toLocaleString()} dòng dữ liệu.` });
     } catch {
-      setValidationStatus("invalid");
-      setValidationError("Không thể đọc file. Hãy kiểm tra lại định dạng.");
-      setRows([]); setHeaders([]);
+      setValidationStatus("invalid"); setValidationError("Không thể đọc file. Hãy kiểm tra lại định dạng."); setRows([]); setHeaders([]);
     }
   }, [toast]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) parseFile(file);
-    e.target.value = "";
+    const file = e.target.files?.[0]; if (file) parseFile(file); e.target.value = "";
   };
-
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault(); setIsDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) parseFile(file);
+    const file = e.dataTransfer.files?.[0]; if (file) parseFile(file);
+  };
+
+  const handleClearFile = () => {
+    setFileName(""); setFileSize(0); setTotalRows(0);
+    setRows([]); setHeaders([]); setValidationStatus("idle"); setValidationError("");
   };
 
   // ── Submit ─────────────────────────────────────────────────
   const handleSubmit = async () => {
-    if (!loggedInUser) { toast({ title: "Lỗi", description: "Vui lòng đăng nhập.", variant: "destructive" }); return; }
-    if (!selectedPlanId) { toast({ title: "Lỗi", description: "Vui lòng chọn Khối.", variant: "destructive" }); return; }
-    if (!selectedCompanyId) { toast({ title: "Lỗi", description: "Vui lòng chọn Công ty.", variant: "destructive" }); return; }
-    if (!selectedCC) { toast({ title: "Lỗi", description: "Vui lòng chọn Cost Center.", variant: "destructive" }); return; }
-    if (validationStatus !== "valid" || rows.length === 0) { toast({ title: "Lỗi", description: "Vui lòng upload file hợp lệ.", variant: "destructive" }); return; }
+    if (!loggedInUser) { toast({ title: "Vui lòng đăng nhập trước.", variant: "destructive" }); return; }
+    if (!selectedPlanId || !selectedCompanyId || !selectedCC) { toast({ title: "Vui lòng chọn đủ Khối → Công ty → Cost Center.", variant: "destructive" }); return; }
+    if (validationStatus !== "valid" || !rows.length) { toast({ title: "Vui lòng upload file hợp lệ.", variant: "destructive" }); return; }
 
     setIsSubmitting(true);
     try {
@@ -212,29 +210,17 @@ export default function UploadPage() {
         accountant_name: loggedInUser.full_name,
         company_id: Number(selectedCompanyId),
         cost_center_code: selectedCC,
-        bp: null,
-        file_name: fileName,
+        bp: null, file_name: fileName,
         file_type: fileName.split(".").pop()?.toLowerCase() ?? "unknown",
-        total_rows: rows.length,
-        preview_rows: Math.min(rows.length, 100),
-        status: "submitted",
-        uploaded_by: loggedInUser.user_id,
-        note: null,
+        total_rows: totalRows, preview_rows: Math.min(rows.length, 200),
+        status: "submitted", uploaded_by: loggedInUser.user_id, note: null,
       };
-
-      const { data: batchData, error: batchError } = await supabase
-        .from("upload_batches")
-        .insert(batch)
-        .select("batch_id")
-        .single();
-
+      const { data: batchData, error: batchError } = await supabase.from("upload_batches").insert(batch).select("batch_id").single();
       if (batchError) throw batchError;
 
       const batchId = batchData.batch_id as string;
-
       const uploadRows: UploadRowInsert[] = rows.map((row, idx) => ({
-        batch_id: batchId,
-        row_number: idx + 1,
+        batch_id: batchId, row_number: idx + 1,
         file_date: parseDate(row["Ngày"] as string),
         system_code: row["Mã hệ thống"] ? String(row["Mã hệ thống"]) : null,
         metric_group: row["Nhóm chỉ tiêu"] ? String(row["Nhóm chỉ tiêu"]) : null,
@@ -250,151 +236,189 @@ export default function UploadPage() {
         raw_json: row as Record<string, unknown>,
       }));
 
-      const CHUNK = 500;
-      for (let i = 0; i < uploadRows.length; i += CHUNK) {
-        const { error: rowsError } = await supabase
-          .from("upload_rows")
-          .insert(uploadRows.slice(i, i + CHUNK));
-        if (rowsError) throw rowsError;
+      for (let i = 0; i < uploadRows.length; i += 500) {
+        const { error } = await supabase.from("upload_rows").insert(uploadRows.slice(i, i + 500));
+        if (error) throw error;
       }
 
-      toast({
-        title: "Submit thành công!",
-        description: `Đã gửi ${rows.length} dòng — batch ID: ${batchId.slice(0, 8)}…`,
-      });
-
-      setRows([]); setHeaders([]); setFileName("");
-      setValidationStatus("idle"); setValidationError("");
+      toast({ title: "Submit thành công!", description: `${totalRows.toLocaleString()} dòng đã được lưu.` });
+      handleClearFile();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Lỗi không xác định";
-      toast({ title: "Submit thất bại", description: msg, variant: "destructive" });
+      toast({ title: "Submit thất bại", description: err instanceof Error ? err.message : "Lỗi không xác định", variant: "destructive" });
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // ── Render ─────────────────────────────────────────────────
+  const canSubmit = !!loggedInUser && !!selectedCC && validationStatus === "valid" && !isSubmitting;
+  const step1Done = !!selectedPlanId;
+  const step2Done = !!selectedCompanyId;
+  const step3Done = !!selectedCC;
+
   return (
-    <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="border-b bg-card shadow-sm">
-        <div className="max-w-screen-2xl mx-auto px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <FileSpreadsheet className="text-primary w-5 h-5" />
-            <h1 className="text-base font-semibold">Upload Dữ Liệu Kế Toán</h1>
+    <div className="min-h-screen bg-[#f4f6fb]">
+      {/* ── Header ── */}
+      <header className="bg-white border-b border-border/60 sticky top-0 z-20 shadow-sm">
+        <div className="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center shadow-sm">
+              <FileSpreadsheet className="w-4 h-4 text-white" />
+            </div>
+            <div>
+              <span className="font-semibold text-sm text-foreground">Kế Toán Upload</span>
+              <span className="hidden sm:inline text-muted-foreground text-xs ml-2">/ Nhập liệu dữ liệu tài chính</span>
+            </div>
           </div>
+
           <div className="flex items-center gap-3">
             {isLoadingMaster && (
               <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                Đang tải dữ liệu...
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                <span className="hidden sm:inline">Đang tải...</span>
               </span>
             )}
+
             {loggedInUser ? (
-              <>
-                <div className="flex items-center gap-2 text-sm">
-                  <UserCircle2 className="w-4 h-4 text-primary" />
-                  <span className="font-medium" data-testid="text-logged-user">{loggedInUser.full_name}</span>
-                  <span className="text-muted-foreground text-xs">(Kế toán)</span>
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 bg-primary/8 border border-primary/15 rounded-full pl-2 pr-3 py-1.5">
+                  <div className="w-6 h-6 rounded-full bg-primary flex items-center justify-center">
+                    <UserCircle2 className="w-4 h-4 text-white" />
+                  </div>
+                  <span className="text-xs font-semibold text-primary" data-testid="text-logged-user">
+                    {loggedInUser.full_name}
+                  </span>
                 </div>
-                <Button
-                  data-testid="button-logout"
-                  variant="ghost" size="sm"
-                  className="gap-1.5 text-muted-foreground"
-                  onClick={handleLogout}
-                >
-                  <LogOut className="w-3.5 h-3.5" /> Đăng xuất
+                <Button variant="ghost" size="sm" onClick={handleLogout}
+                  className="h-8 px-2 text-muted-foreground hover:text-foreground gap-1.5" data-testid="button-logout">
+                  <LogOut className="w-3.5 h-3.5" />
                 </Button>
-              </>
+              </div>
             ) : (
-              <Button
-                data-testid="button-login"
-                size="sm" className="gap-2"
-                onClick={handleLogin}
+              <Button size="sm" onClick={handleLogin}
                 disabled={isLoggingIn || isLoadingMaster}
-              >
+                className="h-8 gap-2 rounded-full px-4 shadow-sm" data-testid="button-login">
                 {isLoggingIn ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LogIn className="w-3.5 h-3.5" />}
-                {isLoggingIn ? "Đang đăng nhập..." : "Đăng nhập"}
+                {isLoggingIn ? "Đang xử lý..." : "Đăng nhập"}
               </Button>
             )}
           </div>
         </div>
       </header>
 
-      <main className="max-w-screen-2xl mx-auto px-6 py-5 space-y-5">
-        <div className="bg-card border rounded-lg p-5 shadow-sm space-y-5">
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 space-y-5">
 
-          {/* Row 1: Ngày + Kế toán */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="space-y-1.5">
-              <Label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ngày</Label>
-              <div data-testid="text-date" className="h-9 px-3 flex items-center rounded-md border bg-muted/50 text-sm font-medium">
-                {today}
-              </div>
+        {/* ── Info strip ── */}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2 bg-white border border-border/60 rounded-xl px-4 py-2.5 shadow-xs">
+            <Calendar className="w-3.5 h-3.5 text-primary" />
+            <span className="text-xs text-muted-foreground">Ngày</span>
+            <span className="text-xs font-semibold text-foreground ml-1" data-testid="text-date">{today}</span>
+          </div>
+          <div className={cn(
+            "flex items-center gap-2 rounded-xl px-4 py-2.5 shadow-xs border transition-all duration-200",
+            loggedInUser
+              ? "bg-emerald-50 border-emerald-200"
+              : "bg-white border-border/60"
+          )}>
+            <UserCircle2 className={cn("w-3.5 h-3.5", loggedInUser ? "text-emerald-600" : "text-muted-foreground")} />
+            <span className="text-xs text-muted-foreground">Kế toán</span>
+            <span className={cn("text-xs font-semibold ml-1", loggedInUser ? "text-emerald-700" : "text-muted-foreground italic")}
+              data-testid="text-accountant">
+              {loggedInUser?.full_name ?? "Chưa đăng nhập"}
+            </span>
+          </div>
+        </div>
+
+        {/* ── Step card: Chọn đơn vị ── */}
+        <div className="bg-white border border-border/60 rounded-2xl shadow-sm overflow-hidden">
+          <div className="px-6 pt-5 pb-1 border-b border-border/40">
+            <div className="flex items-center gap-2 mb-0.5">
+              <Layers3 className="w-4 h-4 text-primary" />
+              <h2 className="text-sm font-semibold text-foreground">Phân loại đơn vị</h2>
             </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Kế toán</Label>
-              <div
-                data-testid="text-accountant"
-                className={cn(
-                  "h-9 px-3 flex items-center rounded-md border text-sm",
-                  loggedInUser ? "bg-muted/50 font-medium" : "bg-muted/30 text-muted-foreground italic"
-                )}
-              >
-                {loggedInUser?.full_name ?? "Chưa đăng nhập"}
-              </div>
-            </div>
+            <p className="text-xs text-muted-foreground pb-4">Chọn lần lượt Khối → Công ty → Cost Center</p>
           </div>
 
-          {/* Row 2: 3-cấp dropdown từ Supabase */}
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">Phân loại đơn vị</p>
+          <div className="px-6 py-5">
+            {/* Step indicators */}
+            <div className="flex items-start gap-0 mb-5">
+              {/* Step 1 */}
+              <div className="flex flex-col items-center gap-1.5 min-w-[5rem]">
+                <StepBadge n={1} active={!step1Done} done={step1Done} />
+                <span className={cn("text-[10px] font-medium text-center", step1Done ? "text-primary" : "text-muted-foreground")}>
+                  Khối
+                </span>
+              </div>
+              <div className={cn("flex-1 h-px mt-3.5 mx-1 transition-all duration-300", step1Done ? "bg-primary/40" : "bg-border")} />
+              {/* Step 2 */}
+              <div className="flex flex-col items-center gap-1.5 min-w-[5rem]">
+                <StepBadge n={2} active={step1Done && !step2Done} done={step2Done} />
+                <span className={cn("text-[10px] font-medium text-center", step2Done ? "text-primary" : "text-muted-foreground")}>
+                  Công ty
+                </span>
+              </div>
+              <div className={cn("flex-1 h-px mt-3.5 mx-1 transition-all duration-300", step2Done ? "bg-primary/40" : "bg-border")} />
+              {/* Step 3 */}
+              <div className="flex flex-col items-center gap-1.5 min-w-[5rem]">
+                <StepBadge n={3} active={step2Done && !step3Done} done={step3Done} />
+                <span className={cn("text-[10px] font-medium text-center", step3Done ? "text-primary" : "text-muted-foreground")}>
+                  Cost Center
+                </span>
+              </div>
+            </div>
+
+            {/* Dropdowns */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              {/* Khối */}
-              <div className="space-y-1.5">
-                <Label className="text-sm font-medium">Khối kinh doanh</Label>
+              <div className="space-y-2">
+                <Label className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
+                  <Layers3 className="w-3.5 h-3.5 text-primary" /> Khối kinh doanh
+                </Label>
                 <Select value={selectedPlanId} onValueChange={handleKhoiChange} disabled={isLoadingMaster}>
-                  <SelectTrigger data-testid="select-khoi" className="h-9">
+                  <SelectTrigger data-testid="select-khoi"
+                    className="h-10 rounded-xl border-border/70 bg-[#f8f9fc] hover:bg-white focus:bg-white transition-colors">
                     <SelectValue placeholder={isLoadingMaster ? "Đang tải..." : "Chọn khối..."} />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="rounded-xl">
                     {khoiOptions.map((k) => (
-                      <SelectItem key={k.plan_id} value={String(k.plan_id)} data-testid={`option-khoi-${k.plan_id}`}>
-                        {k.plan_name}
-                      </SelectItem>
+                      <SelectItem key={k.plan_id} value={String(k.plan_id)}>{k.plan_name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
 
-              {/* Công ty */}
-              <div className="space-y-1.5">
-                <Label className="text-sm font-medium">Công ty</Label>
+              <div className="space-y-2">
+                <Label className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
+                  <Building2 className="w-3.5 h-3.5 text-primary" /> Công ty
+                </Label>
                 <Select value={selectedCompanyId} onValueChange={handleCtyChange} disabled={!selectedPlanId}>
-                  <SelectTrigger data-testid="select-cty" className="h-9">
-                    <SelectValue placeholder={selectedPlanId ? "Chọn công ty..." : "Chọn khối trước"} />
+                  <SelectTrigger data-testid="select-cty"
+                    className={cn("h-10 rounded-xl border-border/70 transition-colors",
+                      !selectedPlanId ? "bg-muted/40 opacity-60" : "bg-[#f8f9fc] hover:bg-white focus:bg-white")}>
+                    <SelectValue placeholder={selectedPlanId ? "Chọn công ty..." : "← Chọn khối trước"} />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="rounded-xl">
                     {companiesForKhoi.map((c) => (
-                      <SelectItem key={c.company_id} value={String(c.company_id)} data-testid={`option-cty-${c.company_id}`}>
-                        {c.company_name}
-                      </SelectItem>
+                      <SelectItem key={c.company_id} value={String(c.company_id)}>{c.company_name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
 
-              {/* Cost Center */}
-              <div className="space-y-1.5">
-                <Label className="text-sm font-medium">Cost Center</Label>
+              <div className="space-y-2">
+                <Label className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
+                  <MapPin className="w-3.5 h-3.5 text-primary" /> Cost Center
+                </Label>
                 <Select value={selectedCC} onValueChange={setSelectedCC} disabled={!selectedCompanyId}>
-                  <SelectTrigger data-testid="select-cc" className="h-9">
-                    <SelectValue placeholder={selectedCompanyId ? "Chọn cost center..." : "Chọn công ty trước"} />
+                  <SelectTrigger data-testid="select-cc"
+                    className={cn("h-10 rounded-xl border-border/70 transition-colors",
+                      !selectedCompanyId ? "bg-muted/40 opacity-60" : "bg-[#f8f9fc] hover:bg-white focus:bg-white")}>
+                    <SelectValue placeholder={selectedCompanyId ? "Chọn cost center..." : "← Chọn công ty trước"} />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="rounded-xl">
                     {ccForCompany.map((cc) => (
-                      <SelectItem key={cc.cost_center_code} value={cc.cost_center_code} data-testid={`option-cc-${cc.cost_center_code}`}>
-                        [{cc.cost_center_code}] {cc.cost_center_name}
+                      <SelectItem key={cc.cost_center_code} value={cc.cost_center_code}>
+                        <span className="font-mono text-primary text-[11px] mr-1.5">[{cc.cost_center_code}]</span>
+                        {cc.cost_center_name}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -402,99 +426,184 @@ export default function UploadPage() {
               </div>
             </div>
 
-            {/* Breadcrumb đã chọn */}
-            {(selectedPlanId || selectedCompanyId || selectedCC) && (
-              <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                {selectedPlanId && <Badge variant="secondary" className="font-normal">{selectedKhoiLabel}</Badge>}
-                {selectedCompanyId && (<><span>›</span><Badge variant="secondary" className="font-normal">{selectedCtyLabel}</Badge></>)}
-                {selectedCC && (<><span>›</span><Badge variant="secondary" className="font-normal">[{selectedCC}] {selectedCCLabel}</Badge></>)}
-              </div>
-            )}
-          </div>
-
-          {/* Row 3: Upload + Submit */}
-          <div className="pt-4 border-t">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
-              <Label className="text-sm font-medium whitespace-nowrap">Upload File</Label>
-              <Button
-                data-testid="button-upload"
-                variant="outline" size="sm" className="gap-2 shrink-0"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <Upload className="w-3.5 h-3.5" /> Chọn file
-              </Button>
-              <input
-                ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls"
-                className="hidden" onChange={handleFileChange} data-testid="input-file"
-              />
-
-              <div
-                className={cn(
-                  "flex-1 h-9 min-w-0 rounded-md border-2 border-dashed px-3 flex items-center text-sm text-muted-foreground transition-colors cursor-pointer",
-                  isDragging && "border-primary bg-primary/5 text-primary",
-                  fileName && "border-solid border-border"
-                )}
-                onDrop={handleDrop}
-                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-                onDragLeave={() => setIsDragging(false)}
-                onClick={() => fileInputRef.current?.click()}
-                data-testid="dropzone"
-              >
-                {fileName
-                  ? <span className="font-medium text-foreground truncate">{fileName}</span>
-                  : <span className="truncate">Kéo thả file vào đây (CSV, XLSX)</span>
-                }
-              </div>
-
-              {validationStatus === "validating" && (
-                <div className="flex items-center gap-1.5 text-sm text-muted-foreground shrink-0">
-                  <Loader2 className="w-4 h-4 animate-spin" /><span>Kiểm tra...</span>
-                </div>
-              )}
-              {validationStatus === "valid" && (
-                <Badge data-testid="badge-valid" variant="secondary" className="gap-1.5 bg-green-100 text-green-700 border-green-200 shrink-0">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Hợp lệ
-                </Badge>
-              )}
-              {validationStatus === "invalid" && (
-                <Badge data-testid="badge-invalid" variant="destructive" className="gap-1.5 shrink-0">
-                  <AlertCircle className="w-3.5 h-3.5" /> Lỗi định dạng
-                </Badge>
-              )}
-
-              <Button
-                data-testid="button-submit"
-                onClick={handleSubmit}
-                disabled={isSubmitting || validationStatus !== "valid" || !loggedInUser}
-                className="gap-2 shrink-0" size="sm"
-              >
-                {isSubmitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                Submit
-              </Button>
-            </div>
-
-            {validationStatus === "invalid" && validationError && (
-              <div data-testid="error-validation" className="mt-2.5 flex items-start gap-2 text-sm text-destructive bg-destructive/10 rounded-md px-3 py-2">
-                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                <span>{validationError}</span>
+            {/* Selected path display */}
+            {step3Done && (
+              <div className="mt-4 flex items-center gap-1.5 flex-wrap text-xs bg-primary/5 border border-primary/15 rounded-xl px-4 py-2.5">
+                <span className="text-primary font-semibold">{selectedKhoiLabel}</span>
+                <ChevronRight className="w-3 h-3 text-primary/50" />
+                <span className="text-primary font-medium">{selectedCtyObj?.company_name}</span>
+                <ChevronRight className="w-3 h-3 text-primary/50" />
+                <span className="font-mono text-primary text-[11px]">[{selectedCC}]</span>
+                <span className="text-primary font-medium">{selectedCCObj?.cost_center_name}</span>
               </div>
             )}
           </div>
         </div>
 
-        {/* Preview table */}
-        {rows.length > 0 ? (
-          <div className="bg-card border rounded-lg shadow-sm overflow-hidden">
-            <div className="px-5 py-3 border-b flex items-center justify-between">
-              <h2 className="font-semibold text-sm">Dữ liệu Preview</h2>
-              <span className="text-xs text-muted-foreground">Hiển thị {rows.length} dòng</span>
+        {/* ── Upload card ── */}
+        <div className="bg-white border border-border/60 rounded-2xl shadow-sm overflow-hidden">
+          <div className="px-6 pt-5 pb-4 border-b border-border/40">
+            <div className="flex items-center gap-2">
+              <CloudUpload className="w-4 h-4 text-primary" />
+              <h2 className="text-sm font-semibold text-foreground">Upload File dữ liệu</h2>
             </div>
-            <div className="overflow-x-auto">
+            <p className="text-xs text-muted-foreground mt-0.5">Hỗ trợ định dạng CSV, XLSX · Tối đa 200 dòng preview</p>
+          </div>
+
+          <div className="p-6 space-y-4">
+            {/* Drop zone */}
+            {!fileName ? (
+              <div
+                onClick={() => fileInputRef.current?.click()}
+                onDrop={handleDrop}
+                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                onDragLeave={() => setIsDragging(false)}
+                data-testid="dropzone"
+                className={cn(
+                  "border-2 border-dashed rounded-2xl p-10 flex flex-col items-center gap-3 cursor-pointer transition-all duration-200",
+                  isDragging
+                    ? "border-primary bg-primary/5 scale-[1.01]"
+                    : "border-border hover:border-primary/50 hover:bg-primary/3"
+                )}
+              >
+                <div className={cn(
+                  "w-14 h-14 rounded-2xl flex items-center justify-center transition-colors",
+                  isDragging ? "bg-primary/15" : "bg-muted"
+                )}>
+                  <CloudUpload className={cn("w-7 h-7", isDragging ? "text-primary" : "text-muted-foreground")} />
+                </div>
+                <div className="text-center">
+                  <p className="text-sm font-semibold text-foreground">Kéo thả file vào đây</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">hoặc <span className="text-primary font-medium underline underline-offset-2">chọn file</span> từ máy tính</p>
+                </div>
+                <div className="flex gap-2">
+                  {["CSV", "XLSX", "XLS"].map((f) => (
+                    <span key={f} className="text-[10px] font-mono bg-muted px-2 py-0.5 rounded-md text-muted-foreground">.{f}</span>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              /* File info card */
+              <div className={cn(
+                "rounded-2xl border p-4 flex items-center gap-4 transition-all duration-200",
+                validationStatus === "valid" ? "border-emerald-200 bg-emerald-50/60" :
+                validationStatus === "invalid" ? "border-red-200 bg-red-50/60" :
+                "border-border bg-muted/30"
+              )}>
+                <div className={cn(
+                  "w-12 h-12 rounded-xl flex items-center justify-center shrink-0",
+                  validationStatus === "valid" ? "bg-emerald-100" :
+                  validationStatus === "invalid" ? "bg-red-100" : "bg-muted"
+                )}>
+                  {validationStatus === "validating" ? (
+                    <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
+                  ) : validationStatus === "valid" ? (
+                    <CheckCircle2 className="w-6 h-6 text-emerald-600" />
+                  ) : validationStatus === "invalid" ? (
+                    <AlertCircle className="w-6 h-6 text-red-500" />
+                  ) : (
+                    <FileSpreadsheet className="w-6 h-6 text-muted-foreground" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-foreground truncate">{fileName}</p>
+                  <div className="flex items-center gap-3 mt-0.5">
+                    <span className="text-xs text-muted-foreground">{(fileSize / 1024).toFixed(1)} KB</span>
+                    {validationStatus === "valid" && (
+                      <span className="text-xs text-emerald-600 font-medium">{totalRows.toLocaleString()} dòng · Hợp lệ</span>
+                    )}
+                    {validationStatus === "invalid" && (
+                      <span className="text-xs text-red-500 font-medium">Lỗi định dạng</span>
+                    )}
+                    {validationStatus === "validating" && (
+                      <span className="text-xs text-muted-foreground">Đang kiểm tra...</span>
+                    )}
+                  </div>
+                  {validationStatus === "invalid" && validationError && (
+                    <p className="text-xs text-red-500 mt-1">{validationError}</p>
+                  )}
+                </div>
+                <Button variant="ghost" size="sm" onClick={handleClearFile}
+                  className="text-muted-foreground hover:text-foreground shrink-0 h-8 px-2 rounded-lg text-xs">
+                  Xóa
+                </Button>
+              </div>
+            )}
+
+            <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls"
+              className="hidden" onChange={handleFileChange} data-testid="input-file" />
+
+            {/* Actions row */}
+            <div className="flex items-center gap-3 pt-1">
+              <Button variant="outline" size="sm"
+                onClick={() => fileInputRef.current?.click()}
+                className="gap-2 rounded-xl h-9 border-border/70" data-testid="button-upload">
+                <Upload className="w-3.5 h-3.5" />
+                {fileName ? "Thay file khác" : "Chọn file"}
+              </Button>
+
+              <div className="flex-1" />
+
+              <Button
+                onClick={handleSubmit}
+                disabled={!canSubmit}
+                size="sm"
+                className="gap-2 rounded-xl h-9 px-6 shadow-sm font-semibold"
+                data-testid="button-submit"
+              >
+                {isSubmitting ? (
+                  <><Loader2 className="w-3.5 h-3.5 animate-spin" />Đang gửi...</>
+                ) : (
+                  <><ClipboardList className="w-3.5 h-3.5" />Submit</>
+                )}
+              </Button>
+            </div>
+
+            {/* Submit checklist */}
+            {!canSubmit && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {[
+                  { label: "Đăng nhập", done: !!loggedInUser },
+                  { label: "Chọn đơn vị", done: step3Done },
+                  { label: "Upload file", done: !!fileName },
+                  { label: "File hợp lệ", done: validationStatus === "valid" },
+                ].map(({ label, done }) => (
+                  <div key={label} className={cn(
+                    "flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs border",
+                    done ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-muted/50 border-border/60 text-muted-foreground"
+                  )}>
+                    {done ? <CheckCircle2 className="w-3 h-3 shrink-0" /> : <div className="w-3 h-3 rounded-full border border-current shrink-0" />}
+                    {label}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── Preview table ── */}
+        <div className="bg-white border border-border/60 rounded-2xl shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-border/40 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <ClipboardList className="w-4 h-4 text-primary" />
+              <h2 className="text-sm font-semibold text-foreground">Dữ liệu Preview</h2>
+            </div>
+            {rows.length > 0 && (
+              <span className="text-xs bg-primary/10 text-primary font-semibold px-3 py-1 rounded-full">
+                {rows.length.toLocaleString()} / {totalRows.toLocaleString()} dòng
+              </span>
+            )}
+          </div>
+
+          {rows.length > 0 ? (
+            <div className="overflow-x-auto max-h-[420px] overflow-y-auto">
               <Table data-testid="table-preview">
-                <TableHeader>
-                  <TableRow className="bg-muted/50 hover:bg-muted/50">
+                <TableHeader className="sticky top-0 z-10">
+                  <TableRow className="bg-[#f4f6fb] hover:bg-[#f4f6fb] border-b border-border/50">
+                    <TableHead className="text-[10px] font-bold text-muted-foreground w-10 px-3 py-2.5 text-center">#</TableHead>
                     {headers.map((col) => (
-                      <TableHead key={col} className="text-xs font-semibold text-foreground whitespace-nowrap px-3 py-2 border-r last:border-r-0">
+                      <TableHead key={col}
+                        className="text-[10px] font-bold text-foreground whitespace-nowrap px-3 py-2.5 border-l border-border/30 first:border-l-0">
                         {col}
                       </TableHead>
                     ))}
@@ -502,10 +611,16 @@ export default function UploadPage() {
                 </TableHeader>
                 <TableBody>
                   {rows.map((row, idx) => (
-                    <TableRow key={idx} data-testid={`row-data-${idx}`} className="hover:bg-muted/30">
+                    <TableRow key={idx} data-testid={`row-data-${idx}`}
+                      className={cn("border-b border-border/30 hover:bg-primary/3 transition-colors",
+                        idx % 2 === 0 ? "bg-white" : "bg-[#fafbfd]")}>
+                      <TableCell className="text-[10px] text-muted-foreground text-center px-3 py-1.5 font-mono">{idx + 1}</TableCell>
                       {headers.map((col) => (
-                        <TableCell key={col} className="text-xs px-3 py-1.5 whitespace-nowrap border-r last:border-r-0">
-                          {row[col] !== undefined && row[col] !== null ? String(row[col]) : ""}
+                        <TableCell key={col}
+                          className="text-xs px-3 py-1.5 whitespace-nowrap border-l border-border/20 first:border-l-0 font-mono text-[11px]">
+                          {row[col] !== undefined && row[col] !== null ? String(row[col]) : (
+                            <span className="text-muted-foreground/40">—</span>
+                          )}
                         </TableCell>
                       ))}
                     </TableRow>
@@ -513,21 +628,18 @@ export default function UploadPage() {
                 </TableBody>
               </Table>
             </div>
-          </div>
-        ) : (
-          <div className="bg-card border rounded-lg shadow-sm">
-            <div className="px-5 py-3 border-b">
-              <h2 className="font-semibold text-sm">Dữ liệu Preview</h2>
-            </div>
-            <div className="py-14 flex flex-col items-center gap-3 text-muted-foreground">
-              <FileSpreadsheet className="w-10 h-10 opacity-25" />
-              <p className="text-sm">Upload file để xem preview dữ liệu</p>
-              <p className="text-xs opacity-60 text-center max-w-lg">
-                Yêu cầu đúng các cột: {REQUIRED_COLUMNS.join(" · ")}
+          ) : (
+            <div className="py-16 flex flex-col items-center gap-3">
+              <div className="w-16 h-16 rounded-2xl bg-muted flex items-center justify-center">
+                <FileSpreadsheet className="w-8 h-8 text-muted-foreground/40" />
+              </div>
+              <p className="text-sm font-medium text-muted-foreground">Chưa có dữ liệu</p>
+              <p className="text-xs text-muted-foreground/70 text-center max-w-sm">
+                Upload file để xem preview. Yêu cầu đúng {REQUIRED_COLUMNS.length} cột theo định dạng.
               </p>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </main>
     </div>
   );
