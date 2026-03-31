@@ -177,48 +177,185 @@ export default function UploadPage() {
   const [rows, setRows] = useState<RowData[]>([]);
   const [headers, setHeaders] = useState<string[]>([]);
   const [validationStatus, setValidationStatus] = useState<ValidationStatus>("idle");
-  const [validationError, setValidationError] = useState<string>("");
+  const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+
+  // ── Data-vs-filter validation ────────────────────────────────
+  const validateDataAgainstFilters = useCallback((
+    data: RowData[],
+    companyId: string,
+    ccId: string,
+    planId: string,
+  ): string[] => {
+    if (!data.length || !loggedInUser) return [];
+    const errs: string[] = [];
+
+    // Build permitted sets scoped to current company filter
+    const scopedMapping = companyId === ALL
+      ? userMapping
+      : userMapping.filter(m => m.company_id === companyId);
+
+    // --- Công ty ---
+    const permittedCompanyIds = companyId === ALL
+      ? [...new Set(userMapping.map(m => m.company_id))]
+      : [companyId];
+    const permittedCompanies = allCompanies.filter(c => permittedCompanyIds.includes(c.company_id));
+    const companyValidValues = new Set([
+      ...permittedCompanies.map(c => c.company_name.toLowerCase().trim()),
+      ...permittedCompanyIds.map(id => id.toLowerCase().trim()),
+    ]);
+
+    // --- Khối ---
+    const permittedPlanIds = planId === ALL
+      ? [...new Set(scopedMapping.map(m => m.plan_id))]
+      : [Number(planId)];
+    const permittedPlans = allPlans.filter(p => permittedPlanIds.includes(p.plan_id));
+    const planValidValues = new Set(permittedPlans.map(p => p.plan_name.toLowerCase().trim()));
+
+    // --- Cost Center (Bộ phận) ---
+    const permittedCCIds = ccId === ALL
+      ? [...new Set(scopedMapping.map(m => m.cost_center_id))]
+      : [ccId];
+    const permittedCCs = allCostCenters.filter(cc => permittedCCIds.includes(cc.cost_center_id));
+    const ccValidValues = new Set([
+      ...permittedCCs.map(cc => cc.cost_center_name.toLowerCase().trim()),
+      ...permittedCCIds.map(id => id.toLowerCase().trim()),
+    ]);
+
+    const companyErrRows: number[] = [];
+    const planErrRows: number[] = [];
+    const ccErrRows: number[] = [];
+
+    data.forEach((row, i) => {
+      const rowNum = i + 2; // 1-based + header
+      const cty = String(row["Công ty"] ?? "").toLowerCase().trim();
+      if (cty && !companyValidValues.has(cty)) companyErrRows.push(rowNum);
+
+      const khoi = String(row["Khối"] ?? "").toLowerCase().trim();
+      if (khoi && !planValidValues.has(khoi)) planErrRows.push(rowNum);
+
+      const bp = String(row["Bộ phận"] ?? "").toLowerCase().trim();
+      if (bp && !ccValidValues.has(bp)) ccErrRows.push(rowNum);
+    });
+
+    if (companyErrRows.length) {
+      const ex = data[companyErrRows[0] - 2]["Công ty"];
+      const allowed = permittedCompanies.map(c => `${c.company_name} [${c.company_id}]`).join(", ");
+      errs.push(
+        `Cột "Công ty": ${companyErrRows.length} dòng không hợp lệ` +
+        ` — dòng ${companyErrRows[0]}: "${ex}". Giá trị được phép: ${allowed}`
+      );
+    }
+    if (planErrRows.length) {
+      const ex = data[planErrRows[0] - 2]["Khối"];
+      const allowed = permittedPlans.map(p => p.plan_name).join(", ");
+      errs.push(
+        `Cột "Khối": ${planErrRows.length} dòng không hợp lệ` +
+        ` — dòng ${planErrRows[0]}: "${ex}". Giá trị được phép: ${allowed}`
+      );
+    }
+    if (ccErrRows.length) {
+      const ex = data[ccErrRows[0] - 2]["Bộ phận"];
+      const allowed = permittedCCs.map(cc => `${cc.cost_center_name} [${cc.cost_center_id}]`).join(", ");
+      errs.push(
+        `Cột "Bộ phận": ${ccErrRows.length} dòng không hợp lệ` +
+        ` — dòng ${ccErrRows[0]}: "${ex}". Giá trị được phép: ${allowed}`
+      );
+    }
+    return errs;
+  }, [loggedInUser, userMapping, allCompanies, allCostCenters, allPlans]);
+
+  // Re-validate when filter selections change (if file already loaded)
+  useEffect(() => {
+    if (!rows.length || validationStatus === "idle" || validationStatus === "validating") return;
+    const errs = validateDataAgainstFilters(rows, selectedCompanyId, selectedCCId, selectedPlanId);
+    setValidationErrors(errs);
+    setValidationStatus(errs.length ? "invalid" : "valid");
+  }, [selectedCompanyId, selectedCCId, selectedPlanId, rows, validationStatus, validateDataAgainstFilters]);
 
   const parseFile = useCallback(async (file: File) => {
     const ext = file.name.split(".").pop()?.toLowerCase();
     if (ext !== "csv" && ext !== "xlsx" && ext !== "xls") {
       setValidationStatus("invalid");
-      setValidationError("Chỉ chấp nhận file CSV hoặc XLSX/XLS.");
+      setValidationErrors(["Chỉ chấp nhận file CSV hoặc XLSX/XLS."]);
       setRows([]); setHeaders([]); setFileName(""); setFileSize(0);
       return;
     }
     setFileName(file.name);
     setFileSize(file.size);
     setValidationStatus("validating");
-    setValidationError("");
+    setValidationErrors([]);
     try {
       const buffer = await file.arrayBuffer();
       const wb = XLSX.read(buffer, { type: "array", cellDates: true });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const jsonData = XLSX.utils.sheet_to_json<RowData>(ws, { raw: false, dateNF: "dd/mm/yyyy" });
+
+      const structuralErrors: string[] = [];
+
       if (!jsonData.length) {
-        setValidationStatus("invalid"); setValidationError("File không có dữ liệu."); setRows([]); setHeaders([]); return;
-      }
-      const fileHeaders = Object.keys(jsonData[0]);
-      const missing = REQUIRED_COLUMNS.filter((col) => !fileHeaders.some((h) => h.trim() === col));
-      if (missing.length) {
         setValidationStatus("invalid");
-        setValidationError(`Thiếu ${missing.length} cột: ${missing.join(", ")}`);
+        setValidationErrors(["File không có dữ liệu."]);
         setRows([]); setHeaders([]); return;
       }
+
+      const fileHeaders = Object.keys(jsonData[0]).map(h => h.trim());
+
+      // 1. Check for missing columns
+      const missing = REQUIRED_COLUMNS.filter(col => !fileHeaders.includes(col));
+      if (missing.length) {
+        structuralErrors.push(`Thiếu ${missing.length} cột bắt buộc: "${missing.join('", "')}"`);
+      }
+
+      // 2. Check column ORDER for columns that do exist
+      const existingRequired = REQUIRED_COLUMNS.filter(col => fileHeaders.includes(col));
+      const orderErrors: string[] = [];
+      existingRequired.forEach(col => {
+        const expectedIdx = REQUIRED_COLUMNS.indexOf(col);
+        const actualIdx = fileHeaders.indexOf(col);
+        if (actualIdx !== expectedIdx) {
+          orderErrors.push(`"${col}" ở vị trí cột ${actualIdx + 1} (cần ở vị trí ${expectedIdx + 1})`);
+        }
+      });
+      if (orderErrors.length) {
+        structuralErrors.push(`Sai thứ tự cột: ${orderErrors.join("; ")}`);
+      }
+
+      // 3. Extra unknown columns
+      const extra = fileHeaders.filter(h => !REQUIRED_COLUMNS.includes(h));
+      if (extra.length) {
+        structuralErrors.push(`Có ${extra.length} cột không nhận dạng được: "${extra.join('", "')}"`);
+      }
+
+      if (structuralErrors.length) {
+        setValidationStatus("invalid");
+        setValidationErrors(structuralErrors);
+        setRows([]); setHeaders([]); return;
+      }
+
+      // 4. Data content validation against filters
+      const dataErrors = validateDataAgainstFilters(jsonData, selectedCompanyId, selectedCCId, selectedPlanId);
+
       setTotalRows(jsonData.length);
       setHeaders(REQUIRED_COLUMNS);
       setRows(jsonData.slice(0, 200));
-      setValidationStatus("valid");
-      toast({ title: "✓ File hợp lệ", description: `${jsonData.length.toLocaleString()} dòng dữ liệu.` });
+
+      if (dataErrors.length) {
+        setValidationStatus("invalid");
+        setValidationErrors(dataErrors);
+        toast({ title: "⚠ File có lỗi dữ liệu", description: `${dataErrors.length} vấn đề cần kiểm tra.`, variant: "destructive" });
+      } else {
+        setValidationStatus("valid");
+        setValidationErrors([]);
+        toast({ title: "✓ File hợp lệ", description: `${jsonData.length.toLocaleString()} dòng dữ liệu.` });
+      }
     } catch {
       setValidationStatus("invalid");
-      setValidationError("Không thể đọc file. Hãy kiểm tra lại định dạng.");
+      setValidationErrors(["Không thể đọc file. Hãy kiểm tra lại định dạng file."]);
       setRows([]); setHeaders([]);
     }
-  }, [toast]);
+  }, [toast, validateDataAgainstFilters, selectedCompanyId, selectedCCId, selectedPlanId]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (file) parseFile(file); e.target.value = "";
@@ -229,7 +366,7 @@ export default function UploadPage() {
   };
   const handleClearFile = () => {
     setFileName(""); setFileSize(0); setTotalRows(0);
-    setRows([]); setHeaders([]); setValidationStatus("idle"); setValidationError("");
+    setRows([]); setHeaders([]); setValidationStatus("idle"); setValidationErrors([]);
   };
 
   // ── Submit ─────────────────────────────────────────────────
@@ -593,7 +730,11 @@ export default function UploadPage() {
                     <p className="text-[11px] font-semibold text-foreground truncate">{fileName}</p>
                     <p className="text-[10px] text-muted-foreground">{(fileSize / 1024).toFixed(1)} KB</p>
                     {validationStatus === "valid" && <p className="text-[10px] text-emerald-600 font-medium">{totalRows.toLocaleString()} dòng · Hợp lệ</p>}
-                    {validationStatus === "invalid" && <p className="text-[10px] text-red-500">{validationError}</p>}
+                    {validationStatus === "invalid" && (
+                      <p className="text-[10px] text-red-500 font-medium">
+                        {validationErrors.length} lỗi phát hiện ↓
+                      </p>
+                    )}
                   </div>
                   <button onClick={handleClearFile} className="text-muted-foreground hover:text-foreground text-[10px] shrink-0 mt-0.5">✕</button>
                 </div>
@@ -626,6 +767,29 @@ export default function UploadPage() {
             </div>
           </div>
         </div>
+
+        {/* ── Validation error panel ── */}
+        {validationErrors.length > 0 && (
+          <div className="bg-red-50 border border-red-200 rounded-2xl overflow-hidden">
+            <div className="px-5 py-3 border-b border-red-200 flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+              <span className="text-xs font-semibold text-red-700">
+                Phát hiện {validationErrors.length} lỗi trong file
+              </span>
+              <span className="ml-auto text-[10px] text-red-400">Cần sửa file hoặc điều chỉnh bộ lọc trước khi submit</span>
+            </div>
+            <ul className="px-5 py-3 space-y-2">
+              {validationErrors.map((err, i) => (
+                <li key={i} className="flex items-start gap-2.5">
+                  <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-red-200 text-red-700 text-[9px] font-bold shrink-0 mt-0.5">
+                    {i + 1}
+                  </span>
+                  <span className="text-[11px] text-red-700 leading-snug">{err}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/* ── Preview table ── */}
         <div className="bg-white border border-border/60 rounded-2xl shadow-sm overflow-hidden">
