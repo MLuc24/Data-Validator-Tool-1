@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Upload Dữ Liệu Kế Toán"
+version = "1.0.0"
+id = "artifacts/upload-ui"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23284
+
+[services.development]
+run = "pnpm --filter @workspace/upload-ui run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/upload-ui", "run", "build" ]
+publicDir = "artifacts/upload-ui/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23284"
+BASE_PATH = "/"
