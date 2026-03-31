@@ -240,39 +240,36 @@ export default function UploadPage() {
     });
 
     if (companyErrRows.length) {
-      const ex = data[companyErrRows[0] - 2]["Công ty"];
-      const allowed = permittedCompanies.map(c => `${c.company_name} [${c.company_id}]`).join(", ");
-      errs.push(
-        `Cột "Công ty": ${companyErrRows.length} dòng không hợp lệ` +
-        ` — dòng ${companyErrRows[0]}: "${ex}". Giá trị được phép: ${allowed}`
-      );
+      const allowed = permittedCompanies.map(c => c.company_name).join(", ");
+      errs.push(`Cột "Công ty": ${companyErrRows.length} dòng không hợp lệ. Cho phép: ${allowed}`);
     }
     if (planErrRows.length) {
-      const ex = data[planErrRows[0] - 2]["Khối"];
       const allowed = permittedPlans.map(p => p.plan_name).join(", ");
-      errs.push(
-        `Cột "Khối": ${planErrRows.length} dòng không hợp lệ` +
-        ` — dòng ${planErrRows[0]}: "${ex}". Giá trị được phép: ${allowed}`
-      );
+      errs.push(`Cột "Khối": ${planErrRows.length} dòng không hợp lệ. Cho phép: ${allowed}`);
     }
     if (ccErrRows.length) {
-      const ex = data[ccErrRows[0] - 2]["Bộ phận"];
-      const allowed = permittedCCs.map(cc => `${cc.cost_center_name} [${cc.cost_center_id}]`).join(", ");
-      errs.push(
-        `Cột "Bộ phận": ${ccErrRows.length} dòng không hợp lệ` +
-        ` — dòng ${ccErrRows[0]}: "${ex}". Giá trị được phép: ${allowed}`
-      );
+      const allowed = permittedCCs.map(cc => cc.cost_center_name).join(", ");
+      errs.push(`Cột "Bộ phận": ${ccErrRows.length} dòng không hợp lệ. Cho phép: ${allowed}`);
     }
     return errs;
   }, [loggedInUser, userMapping, allCompanies, allCostCenters, allPlans]);
 
   // Re-validate when filter selections change (if file already loaded)
   useEffect(() => {
-    if (!rows.length || validationStatus === "idle" || validationStatus === "validating") return;
+    if (!fileName || validationStatus === "idle" || validationStatus === "validating") return;
+    // Only re-run data validation if we currently have rows (i.e. previous parse was clean)
+    if (!rows.length) return;
     const errs = validateDataAgainstFilters(rows, selectedCompanyId, selectedCCId, selectedPlanId);
-    setValidationErrors(errs);
-    setValidationStatus(errs.length ? "invalid" : "valid");
-  }, [selectedCompanyId, selectedCCId, selectedPlanId, rows, validationStatus, validateDataAgainstFilters]);
+    if (errs.length) {
+      setValidationErrors(errs);
+      setValidationStatus("invalid");
+      setRows([]); setHeaders([]); setTotalRows(0);
+    } else {
+      setValidationErrors([]);
+      setValidationStatus("valid");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCompanyId, selectedCCId, selectedPlanId]);
 
   const parseFile = useCallback(async (file: File) => {
     const ext = file.name.split(".").pop()?.toLowerCase();
@@ -305,27 +302,27 @@ export default function UploadPage() {
       // 1. Check for missing columns
       const missing = REQUIRED_COLUMNS.filter(col => !fileHeaders.includes(col));
       if (missing.length) {
-        structuralErrors.push(`Thiếu ${missing.length} cột bắt buộc: "${missing.join('", "')}"`);
+        structuralErrors.push(`Thiếu ${missing.length} cột: ${missing.join(", ")}`);
       }
 
       // 2. Check column ORDER for columns that do exist
-      const existingRequired = REQUIRED_COLUMNS.filter(col => fileHeaders.includes(col));
-      const orderErrors: string[] = [];
-      existingRequired.forEach(col => {
-        const expectedIdx = REQUIRED_COLUMNS.indexOf(col);
-        const actualIdx = fileHeaders.indexOf(col);
-        if (actualIdx !== expectedIdx) {
-          orderErrors.push(`"${col}" ở vị trí cột ${actualIdx + 1} (cần ở vị trí ${expectedIdx + 1})`);
+      if (!missing.length) {
+        const orderErrors: string[] = [];
+        REQUIRED_COLUMNS.forEach((col, expectedIdx) => {
+          const actualIdx = fileHeaders.indexOf(col);
+          if (actualIdx !== expectedIdx) {
+            orderErrors.push(`"${col}" (vị trí ${actualIdx + 1}, cần ${expectedIdx + 1})`);
+          }
+        });
+        if (orderErrors.length) {
+          structuralErrors.push(`Sai thứ tự ${orderErrors.length} cột: ${orderErrors.join("; ")}`);
         }
-      });
-      if (orderErrors.length) {
-        structuralErrors.push(`Sai thứ tự cột: ${orderErrors.join("; ")}`);
       }
 
       // 3. Extra unknown columns
       const extra = fileHeaders.filter(h => !REQUIRED_COLUMNS.includes(h));
       if (extra.length) {
-        structuralErrors.push(`Có ${extra.length} cột không nhận dạng được: "${extra.join('", "')}"`);
+        structuralErrors.push(`${extra.length} cột không nhận dạng: ${extra.join(", ")}`);
       }
 
       if (structuralErrors.length) {
@@ -337,15 +334,17 @@ export default function UploadPage() {
       // 4. Data content validation against filters
       const dataErrors = validateDataAgainstFilters(jsonData, selectedCompanyId, selectedCCId, selectedPlanId);
 
-      setTotalRows(jsonData.length);
-      setHeaders(REQUIRED_COLUMNS);
-      setRows(jsonData.slice(0, 200));
-
       if (dataErrors.length) {
+        // Errors found → do NOT populate preview
         setValidationStatus("invalid");
         setValidationErrors(dataErrors);
-        toast({ title: "⚠ File có lỗi dữ liệu", description: `${dataErrors.length} vấn đề cần kiểm tra.`, variant: "destructive" });
+        setRows([]); setHeaders([]); setTotalRows(0);
+        toast({ title: "File có lỗi dữ liệu", variant: "destructive" });
       } else {
+        // All clear → populate preview
+        setTotalRows(jsonData.length);
+        setHeaders(REQUIRED_COLUMNS);
+        setRows(jsonData.slice(0, 200));
         setValidationStatus("valid");
         setValidationErrors([]);
         toast({ title: "✓ File hợp lệ", description: `${jsonData.length.toLocaleString()} dòng dữ liệu.` });
