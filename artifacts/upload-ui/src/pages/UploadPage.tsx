@@ -395,7 +395,7 @@ export default function UploadPage() {
         total_rows: totalRows,
         success_rows: rows.length,
         failed_rows: 0,
-        status: "submitted",
+        status: "completed",
       };
 
       const { data: batchData, error: batchError } = await supabase

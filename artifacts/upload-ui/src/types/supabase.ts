@@ -38,7 +38,7 @@ export interface UploadBatchInsert {
   total_rows: number;
   success_rows: number;
   failed_rows: number;
-  status: string;
+  status: "draft" | "completed" | "failed";
 }
 
 export interface UploadRowInsert {
