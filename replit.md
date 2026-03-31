@@ -91,6 +91,26 @@ Generated Zod schemas from the OpenAPI spec (e.g. `HealthCheckResponse`). Used b
 
 Generated React Query hooks and fetch client from the OpenAPI spec (e.g. `useHealthCheck`, `healthCheck`).
 
+### `artifacts/upload-ui` (`@workspace/upload-ui`)
+
+React + Vite web app for accounting data upload ("Kế Toán Upload").
+
+- **Stack**: React 18, Vite, Tailwind CSS, shadcn/ui, Supabase JS client, XLSX
+- **Auth**: Simulated user login (from `users` table) — no real auth system
+- **Permissions**: `users_file` table drives can_create / can_read / can_update / can_approve
+- **File upload flow**: parse + validate in-browser → upload raw file to Supabase Storage S3 bucket (`KeToan`) via api-server proxy → insert `upload_batches` record with S3 metadata
+- **No `upload_rows` insert**: file is stored on S3, not as row-by-row DB records
+- **S3 Bucket**: `KeToan`, region `ap-southeast-2`, endpoint via Supabase Storage S3-compatible API
+- **Approval workflow**: approvers see an inline "Hàng chờ phê duyệt" panel below the preview table with Duyệt/Từ chối buttons
+- **History sheet**: slide-in panel showing own uploaded files ("File của tôi")
+- **File preview dialog**: for S3 batches — downloads signed URL from api-server, re-parses XLSX/CSV in browser; for old DB batches — queries `upload_rows` table
+
+### `artifacts/api-server` S3 routes
+
+- `POST /api/storage/upload` — multipart file upload (via multer), forwards to S3, returns `{ storagePath, bucket, mime_type, file_size_bytes, stored_file_name }`
+- `POST /api/storage/download-url` — generates S3 presigned GET URL (1h TTL), returns `{ signedUrl }`
+- S3 credentials configured via env vars: `S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET`
+
 ### `scripts` (`@workspace/scripts`)
 
 Utility scripts package. Each script is a `.ts` file in `src/` with a corresponding npm script in `package.json`. Run scripts via `pnpm --filter @workspace/scripts run <script>`. Scripts can import any workspace package (e.g., `@workspace/db`) by adding it as a dependency in `scripts/package.json`.

@@ -7,7 +7,6 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
@@ -17,13 +16,13 @@ import {
   Building2, Layers3, MapPin, CloudUpload, ChevronRight,
   Calendar, ClipboardList, Upload, ChevronDown, Users,
   History, ShieldCheck, ThumbsUp, ThumbsDown, Eye,
-  FileCheck2, FileClock, FileX2, RefreshCw,
+  FileCheck2, FileClock, FileX2, RefreshCw, Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/lib/supabase";
 import type {
   AppUser, UserMapping, CostCenter, Company, Plan,
-  UploadBatchInsert, UploadRowInsert,
+  UploadBatchInsert,
 } from "@/types/supabase";
 
 const REQUIRED_COLUMNS = [
@@ -47,6 +46,11 @@ interface BatchRecord {
   status: "draft" | "completed" | "failed";
   submitted_at: string;
   note: string | null;
+  storage_path: string | null;
+  storage_bucket: string | null;
+  mime_type: string | null;
+  file_size_bytes: number | null;
+  stored_file_name: string | null;
 }
 
 interface UserFilePermissions {
@@ -57,7 +61,8 @@ interface UserFilePermissions {
   can_approve: boolean;
 }
 
-type BatchRow = Record<string, string | number | null>;
+type BatchPreviewSource = "s3" | "db" | null;
+type BatchPreviewRow = Record<string, unknown>;
 
 const ROW_COLUMN_MAP: { db: string; label: string }[] = [
   { db: "ngay", label: "Ngày" },
@@ -74,25 +79,6 @@ const ROW_COLUMN_MAP: { db: string; label: string }[] = [
   { db: "so_tien", label: "Số tiền" },
 ];
 
-function parseDate(raw: string | number | undefined): string | null {
-  if (!raw) return null;
-  const s = String(raw).trim();
-  const parts = s.split("/");
-  if (parts.length === 3) {
-    const [d, m, y] = parts;
-    const iso = `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
-    return isNaN(Date.parse(iso)) ? null : iso;
-  }
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d.toISOString().split("T")[0];
-}
-
-function parseAmount(raw: string | number | undefined): number | null {
-  if (raw === undefined || raw === null || raw === "") return null;
-  const n = parseFloat(String(raw).replace(/[^0-9.-]/g, ""));
-  return isNaN(n) ? null : n;
-}
-
 export default function UploadPage() {
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -101,7 +87,7 @@ export default function UploadPage() {
     day: "2-digit", month: "2-digit", year: "numeric",
   });
 
-  // ── Master data (static, loaded once) ─────────────────────
+  // ── Master data ────────────────────────────────────────────
   const [allUsers, setAllUsers] = useState<AppUser[]>([]);
   const [allCompanies, setAllCompanies] = useState<Company[]>([]);
   const [allCostCenters, setAllCostCenters] = useState<CostCenter[]>([]);
@@ -131,7 +117,6 @@ export default function UploadPage() {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [userMapping, setUserMapping] = useState<UserMapping[]>([]);
   const [loginPopoverOpen, setLoginPopoverOpen] = useState(false);
-  // Pre-fetched mapping counts per user for display in picker
   const [allMappings, setAllMappings] = useState<UserMapping[]>([]);
 
   useEffect(() => {
@@ -162,27 +147,26 @@ export default function UploadPage() {
     setSelectedCompanyId(ALL);
     setSelectedCCId(ALL);
     setSelectedPlanId(ALL);
+    setUserPerms(null);
+    setPendingBatches([]);
   };
 
-  // Helper: initials avatar color per user index
   const avatarColors = [
     "bg-violet-500", "bg-blue-500", "bg-emerald-500", "bg-amber-500", "bg-rose-500",
   ];
   const getInitials = (name: string) =>
     name.split(" ").slice(-2).map((w) => w[0]).join("").toUpperCase();
 
-  // ── Derived dropdown options (scoped to user mapping) ─────
+  // ── Dropdown options ───────────────────────────────────────
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>(ALL);
   const [selectedCCId, setSelectedCCId] = useState<string>(ALL);
   const [selectedPlanId, setSelectedPlanId] = useState<string>(ALL);
 
-  // Companies the user can see
   const userCompanyIds = [...new Set(userMapping.map((m) => m.company_id))];
   const userCompanies = allCompanies
     .filter((c) => userCompanyIds.includes(c.company_id))
     .sort((a, b) => a.company_id.localeCompare(b.company_id));
 
-  // Cost centers: filter mapping by selected company
   const mappingForCompany = selectedCompanyId === ALL
     ? userMapping
     : userMapping.filter((m) => m.company_id === selectedCompanyId);
@@ -192,7 +176,6 @@ export default function UploadPage() {
     .filter((cc) => userCCIds.includes(cc.cost_center_id))
     .sort((a, b) => a.cost_center_id.localeCompare(b.cost_center_id));
 
-  // Plans: filter mapping by selected company
   const userPlanIds = [...new Set(mappingForCompany.map((m) => m.plan_id))];
   const userPlans = allPlans
     .filter((p) => userPlanIds.includes(p.plan_id))
@@ -204,18 +187,17 @@ export default function UploadPage() {
     setSelectedPlanId(ALL);
   };
 
-  // Resolved labels for display
   const selectedCompany = userCompanies.find((c) => c.company_id === selectedCompanyId);
   const selectedCC = userCostCenters.find((cc) => cc.cost_center_id === selectedCCId);
   const selectedPlan = userPlans.find((p) => String(p.plan_id) === selectedPlanId);
 
-  // For submit: resolve actual values (if "all" but only 1 option, auto-use it)
   const resolvedCompanyId = selectedCompanyId !== ALL ? selectedCompanyId
     : userCompanies.length === 1 ? userCompanies[0].company_id : null;
   const resolvedCCId = selectedCCId !== ALL ? selectedCCId
     : userCostCenters.length === 1 ? userCostCenters[0].cost_center_id : null;
 
   // ── File upload ────────────────────────────────────────────
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [fileName, setFileName] = useState<string>("");
   const [fileSize, setFileSize] = useState<number>(0);
   const [totalRows, setTotalRows] = useState<number>(0);
@@ -226,26 +208,29 @@ export default function UploadPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
-  // ── Permissions (from users_file table) ───────────────────
+  // ── Permissions ────────────────────────────────────────────
   const [userPerms, setUserPerms] = useState<UserFilePermissions | null>(null);
   const canCreate = userPerms?.can_create ?? false;
   const canRead   = userPerms?.can_read   ?? false;
   const canApprove = userPerms?.can_approve ?? false;
 
-  // ── History / Approval panel ───────────────────────────────
+  // ── History panel ──────────────────────────────────────────
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyBatches, setHistoryBatches] = useState<BatchRecord[]>([]);
-  const [pendingBatches, setPendingBatches] = useState<BatchRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+
+  // ── Pending approval panel (inline) ───────────────────────
+  const [pendingBatches, setPendingBatches] = useState<BatchRecord[]>([]);
+  const [pendingLoading, setPendingLoading] = useState(false);
   const [approvingId, setApprovingId] = useState<number | null>(null);
-  const [historyTab, setHistoryTab] = useState<"mine" | "pending">("mine");
 
-  // ── Batch row preview ──────────────────────────────────────
+  // ── Batch preview dialog ───────────────────────────────────
   const [previewBatch, setPreviewBatch] = useState<BatchRecord | null>(null);
-  const [batchRows, setBatchRows] = useState<BatchRow[]>([]);
+  const [batchRows, setBatchRows] = useState<BatchPreviewRow[]>([]);
   const [batchRowsLoading, setBatchRowsLoading] = useState(false);
+  const [batchPreviewSource, setBatchPreviewSource] = useState<BatchPreviewSource>(null);
 
-  // Load permissions from users_file when user logs in
+  // Load permissions on login
   useEffect(() => {
     if (!loggedInUser) { setUserPerms(null); return; }
     supabase.from("users_file")
@@ -258,41 +243,40 @@ export default function UploadPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loggedInUser?.id]);
 
-  const handleViewBatch = async (batch: BatchRecord) => {
-    setPreviewBatch(batch);
-    setBatchRows([]);
-    setBatchRowsLoading(true);
-    const { data } = await supabase
-      .from("upload_rows")
-      .select("ngay, ma_he_thong, nhom_chi_tieu, khoan_muc, tieu_muc, thuoc_tinh, noi_dung, cong_ty, loai_du_lieu, khoi, bo_phan, so_tien")
-      .eq("batch_id", batch.id)
-      .order("row_no")
-      .limit(300);
-    setBatchRows((data ?? []) as BatchRow[]);
-    setBatchRowsLoading(false);
+  // Auto-load pending when canApprove
+  useEffect(() => {
+    if (canApprove && loggedInUser) loadPendingBatches();
+    else setPendingBatches([]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canApprove, loggedInUser?.id]);
+
+  const loadPendingBatches = async () => {
+    if (!loggedInUser) return;
+    setPendingLoading(true);
+    try {
+      const { data } = await supabase
+        .from("upload_batches")
+        .select("*")
+        .eq("status", "draft")
+        .order("submitted_at", { ascending: false })
+        .limit(100);
+      if (data) setPendingBatches(data as BatchRecord[]);
+    } finally {
+      setPendingLoading(false);
+    }
   };
 
-  const loadHistory = async (approver?: boolean) => {
+  const loadHistory = async () => {
     if (!loggedInUser) return;
     setHistoryLoading(true);
-    const isAppr = approver ?? canApprove;
     try {
-      const [myRes, pendingRes] = await Promise.all([
-        supabase.from("upload_batches")
-          .select("*")
-          .eq("uploaded_by", loggedInUser.id)
-          .order("submitted_at", { ascending: false })
-          .limit(50),
-        isAppr
-          ? supabase.from("upload_batches")
-              .select("*")
-              .eq("status", "draft")
-              .order("submitted_at", { ascending: false })
-              .limit(50)
-          : Promise.resolve({ data: [] as BatchRecord[], error: null }),
-      ]);
-      if (myRes.data) setHistoryBatches(myRes.data as BatchRecord[]);
-      if (pendingRes.data) setPendingBatches(pendingRes.data as BatchRecord[]);
+      const { data } = await supabase
+        .from("upload_batches")
+        .select("*")
+        .eq("uploaded_by", loggedInUser.id)
+        .order("submitted_at", { ascending: false })
+        .limit(50);
+      if (data) setHistoryBatches(data as BatchRecord[]);
     } finally {
       setHistoryLoading(false);
     }
@@ -303,6 +287,7 @@ export default function UploadPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [historyOpen]);
 
+  // ── Approve / Reject ───────────────────────────────────────
   const handleApprove = async (batchId: number) => {
     setApprovingId(batchId);
     try {
@@ -310,7 +295,7 @@ export default function UploadPage() {
         .update({ status: "completed" }).eq("id", batchId);
       if (error) throw new Error(error.message);
       toast({ title: "Đã phê duyệt!", description: `Batch #${batchId} đã được chấp thuận.` });
-      await loadHistory();
+      await loadPendingBatches();
     } catch (err) {
       toast({ title: "Lỗi phê duyệt", description: String(err), variant: "destructive" });
     } finally {
@@ -325,7 +310,7 @@ export default function UploadPage() {
         .update({ status: "failed" }).eq("id", batchId);
       if (error) throw new Error(error.message);
       toast({ title: "Đã từ chối", description: `Batch #${batchId} đã bị từ chối.` });
-      await loadHistory();
+      await loadPendingBatches();
     } catch (err) {
       toast({ title: "Lỗi từ chối", description: String(err), variant: "destructive" });
     } finally {
@@ -333,7 +318,61 @@ export default function UploadPage() {
     }
   };
 
-  // ── Data-vs-filter validation ────────────────────────────────
+  // ── Batch preview ──────────────────────────────────────────
+  const handleViewBatch = async (batch: BatchRecord) => {
+    setPreviewBatch(batch);
+    setBatchRows([]);
+    setBatchRowsLoading(true);
+    setBatchPreviewSource(null);
+    try {
+      if (batch.storage_path) {
+        // Load from S3
+        const res = await fetch("/api/storage/download-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            storagePath: batch.storage_path,
+            bucket: batch.storage_bucket,
+          }),
+        });
+        if (!res.ok) throw new Error("Không thể lấy link tải file");
+        const { signedUrl, error: urlError } = await res.json() as { signedUrl?: string; error?: string };
+        if (urlError || !signedUrl) throw new Error(urlError ?? "Lỗi lấy link");
+
+        const fileRes = await fetch(signedUrl);
+        if (!fileRes.ok) throw new Error("Không thể tải file từ S3");
+        const buffer = await fileRes.arrayBuffer();
+
+        const wb = XLSX.read(buffer, { type: "array", cellDates: true });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const jsonData = XLSX.utils.sheet_to_json(ws, { raw: false, dateNF: "dd/mm/yyyy" });
+
+        setBatchRows(jsonData as BatchPreviewRow[]);
+        setBatchPreviewSource("s3");
+      } else {
+        // Fallback: load from upload_rows (old batches)
+        const { data } = await supabase
+          .from("upload_rows")
+          .select("ngay, ma_he_thong, nhom_chi_tieu, khoan_muc, tieu_muc, thuoc_tinh, noi_dung, cong_ty, loai_du_lieu, khoi, bo_phan, so_tien")
+          .eq("batch_id", batch.id)
+          .order("row_no")
+          .limit(300);
+        setBatchRows((data ?? []) as BatchPreviewRow[]);
+        setBatchPreviewSource("db");
+      }
+    } catch (err) {
+      toast({
+        title: "Không thể tải dữ liệu",
+        description: err instanceof Error ? err.message : "Lỗi không xác định",
+        variant: "destructive",
+      });
+      setBatchPreviewSource(null);
+    } finally {
+      setBatchRowsLoading(false);
+    }
+  };
+
+  // ── Data validation ────────────────────────────────────────
   const validateDataAgainstFilters = useCallback((
     data: RowData[],
     companyId: string,
@@ -343,12 +382,10 @@ export default function UploadPage() {
     if (!data.length || !loggedInUser) return [];
     const errs: string[] = [];
 
-    // Build permitted sets scoped to current company filter
     const scopedMapping = companyId === ALL
       ? userMapping
       : userMapping.filter(m => m.company_id === companyId);
 
-    // --- Công ty ---
     const permittedCompanyIds = companyId === ALL
       ? [...new Set(userMapping.map(m => m.company_id))]
       : [companyId];
@@ -358,14 +395,12 @@ export default function UploadPage() {
       ...permittedCompanyIds.map(id => id.toLowerCase().trim()),
     ]);
 
-    // --- Khối ---
     const permittedPlanIds = planId === ALL
       ? [...new Set(scopedMapping.map(m => m.plan_id))]
       : [Number(planId)];
     const permittedPlans = allPlans.filter(p => permittedPlanIds.includes(p.plan_id));
     const planValidValues = new Set(permittedPlans.map(p => p.plan_name.toLowerCase().trim()));
 
-    // --- Cost Center (Bộ phận) ---
     const permittedCCIds = ccId === ALL
       ? [...new Set(scopedMapping.map(m => m.cost_center_id))]
       : [ccId];
@@ -380,13 +415,11 @@ export default function UploadPage() {
     const ccErrRows: number[] = [];
 
     data.forEach((row, i) => {
-      const rowNum = i + 2; // 1-based + header
+      const rowNum = i + 2;
       const cty = String(row["Công ty"] ?? "").toLowerCase().trim();
       if (cty && !companyValidValues.has(cty)) companyErrRows.push(rowNum);
-
       const khoi = String(row["Khối"] ?? "").toLowerCase().trim();
       if (khoi && !planValidValues.has(khoi)) planErrRows.push(rowNum);
-
       const bp = String(row["Bộ phận"] ?? "").toLowerCase().trim();
       if (bp && !ccValidValues.has(bp)) ccErrRows.push(rowNum);
     });
@@ -406,10 +439,8 @@ export default function UploadPage() {
     return errs;
   }, [loggedInUser, userMapping, allCompanies, allCostCenters, allPlans]);
 
-  // Re-validate when filter selections change (if file already loaded)
   useEffect(() => {
     if (!fileName || validationStatus === "idle" || validationStatus === "validating") return;
-    // Only re-run data validation if we currently have rows (i.e. previous parse was clean)
     if (!rows.length) return;
     const errs = validateDataAgainstFilters(rows, selectedCompanyId, selectedCCId, selectedPlanId);
     if (errs.length) {
@@ -428,9 +459,10 @@ export default function UploadPage() {
     if (ext !== "csv" && ext !== "xlsx" && ext !== "xls") {
       setValidationStatus("invalid");
       setValidationErrors(["Chỉ chấp nhận file CSV hoặc XLSX/XLS."]);
-      setRows([]); setHeaders([]); setFileName(""); setFileSize(0);
+      setRows([]); setHeaders([]); setFileName(""); setFileSize(0); setUploadFile(null);
       return;
     }
+    setUploadFile(file);
     setFileName(file.name);
     setFileSize(file.size);
     setValidationStatus("validating");
@@ -451,13 +483,11 @@ export default function UploadPage() {
 
       const fileHeaders = Object.keys(jsonData[0]).map(h => h.trim());
 
-      // 1. Check for missing columns
       const missing = REQUIRED_COLUMNS.filter(col => !fileHeaders.includes(col));
       if (missing.length) {
         structuralErrors.push(`Thiếu ${missing.length} cột: ${missing.join(", ")}`);
       }
 
-      // 2. Check column ORDER for columns that do exist
       if (!missing.length) {
         const orderErrors: string[] = [];
         REQUIRED_COLUMNS.forEach((col, expectedIdx) => {
@@ -471,7 +501,6 @@ export default function UploadPage() {
         }
       }
 
-      // 3. Extra unknown columns
       const extra = fileHeaders.filter(h => !REQUIRED_COLUMNS.includes(h));
       if (extra.length) {
         structuralErrors.push(`${extra.length} cột không nhận dạng: ${extra.join(", ")}`);
@@ -483,17 +512,14 @@ export default function UploadPage() {
         setRows([]); setHeaders([]); return;
       }
 
-      // 4. Data content validation against filters
       const dataErrors = validateDataAgainstFilters(jsonData, selectedCompanyId, selectedCCId, selectedPlanId);
 
       if (dataErrors.length) {
-        // Errors found → do NOT populate preview
         setValidationStatus("invalid");
         setValidationErrors(dataErrors);
         setRows([]); setHeaders([]); setTotalRows(0);
         toast({ title: "File có lỗi dữ liệu", variant: "destructive" });
       } else {
-        // All clear → populate preview
         setTotalRows(jsonData.length);
         setHeaders(REQUIRED_COLUMNS);
         setRows(jsonData.slice(0, 200));
@@ -504,7 +530,7 @@ export default function UploadPage() {
     } catch {
       setValidationStatus("invalid");
       setValidationErrors(["Không thể đọc file. Hãy kiểm tra lại định dạng file."]);
-      setRows([]); setHeaders([]);
+      setRows([]); setHeaders([]); setUploadFile(null);
     }
   }, [toast, validateDataAgainstFilters, selectedCompanyId, selectedCCId, selectedPlanId]);
 
@@ -516,14 +542,18 @@ export default function UploadPage() {
     const file = e.dataTransfer.files?.[0]; if (file) parseFile(file);
   };
   const handleClearFile = () => {
+    setUploadFile(null);
     setFileName(""); setFileSize(0); setTotalRows(0);
     setRows([]); setHeaders([]); setValidationStatus("idle"); setValidationErrors([]);
   };
 
-  // ── Submit ─────────────────────────────────────────────────
+  // ── Submit (upload to S3 then record batch) ────────────────
   const handleSubmit = async () => {
     if (!loggedInUser) {
       toast({ title: "Vui lòng đăng nhập trước.", variant: "destructive" }); return;
+    }
+    if (!canCreate) {
+      toast({ title: "Bạn không có quyền upload.", variant: "destructive" }); return;
     }
     if (!resolvedCompanyId) {
       toast({ title: "Vui lòng chọn Công ty cụ thể trước khi submit.", variant: "destructive" }); return;
@@ -531,64 +561,59 @@ export default function UploadPage() {
     if (!resolvedCCId) {
       toast({ title: "Vui lòng chọn Cost Center cụ thể trước khi submit.", variant: "destructive" }); return;
     }
-    if (validationStatus !== "valid" || !rows.length) {
+    if (validationStatus !== "valid" || !uploadFile) {
       toast({ title: "Vui lòng upload file hợp lệ.", variant: "destructive" }); return;
     }
 
     setIsSubmitting(true);
     try {
-      const resolvedPlanId = selectedPlanId !== ALL ? Number(selectedPlanId) : null;
+      // 1. Upload file to S3 via api-server
+      const formData = new FormData();
+      formData.append("file", uploadFile);
 
+      const uploadRes = await fetch("/api/storage/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!uploadRes.ok) {
+        let errMsg = "Upload S3 thất bại";
+        try {
+          const errBody = await uploadRes.json() as { error?: string };
+          if (errBody.error) errMsg = errBody.error;
+        } catch { /* ignore */ }
+        throw new Error(errMsg);
+      }
+
+      const s3Result = await uploadRes.json() as {
+        storagePath: string;
+        bucket: string;
+        mime_type: string;
+        file_size_bytes: number;
+        stored_file_name: string;
+      };
+
+      // 2. Create batch record in Supabase
       const batch: UploadBatchInsert = {
         uploaded_by: loggedInUser.id,
         file_name: fileName,
         original_file_name: fileName,
         note: null,
         total_rows: totalRows,
-        success_rows: rows.length,
+        success_rows: totalRows,
         failed_rows: 0,
         status: canApprove ? "completed" : "draft",
+        storage_path: s3Result.storagePath,
+        storage_bucket: s3Result.bucket,
+        mime_type: s3Result.mime_type,
+        file_size_bytes: s3Result.file_size_bytes,
+        stored_file_name: s3Result.stored_file_name,
       };
 
-      const { data: batchData, error: batchError } = await supabase
-        .from("upload_batches").insert(batch).select("id").single();
+      const { error: batchError } = await supabase
+        .from("upload_batches")
+        .insert(batch);
       if (batchError) throw new Error(batchError.message || batchError.details || JSON.stringify(batchError));
-
-      const batchId = batchData.id as number;
-
-      const uploadRows: UploadRowInsert[] = rows.map((row, idx) => {
-        const maHt = row["Mã hệ thống"];
-        const maHtNum = maHt !== undefined && maHt !== null && maHt !== ""
-          ? parseInt(String(maHt).replace(/[^0-9]/g, ""), 10) || null
-          : null;
-        return {
-          batch_id: batchId,
-          row_no: idx + 1,
-          ngay: parseDate(row["Ngày"] as string),
-          ma_he_thong: maHtNum,
-          nhom_chi_tieu: row["Nhóm chỉ tiêu"] ? String(row["Nhóm chỉ tiêu"]) : null,
-          khoan_muc: row["Khoản mục"] ? String(row["Khoản mục"]) : null,
-          tieu_muc: row["Tiểu mục"] ? String(row["Tiểu mục"]) : null,
-          thuoc_tinh: row["Thuộc tính"] ? String(row["Thuộc tính"]) : null,
-          noi_dung: row["Nội dung"] ? String(row["Nội dung"]) : null,
-          cong_ty: row["Công ty"] ? String(row["Công ty"]) : null,
-          loai_du_lieu: row["Loại dữ liệu"] ? String(row["Loại dữ liệu"]) : null,
-          khoi: row["Khối"] ? String(row["Khối"]) : null,
-          bo_phan: row["Bộ phận"] ? String(row["Bộ phận"]) : null,
-          so_tien: parseAmount(row["Số tiền"]),
-          company_id: resolvedCompanyId,
-          plan_id: resolvedPlanId,
-          cost_center_id: resolvedCCId,
-          created_by: loggedInUser.id,
-          is_valid: true,
-          error_message: null,
-        };
-      });
-
-      for (let i = 0; i < uploadRows.length; i += 500) {
-        const { error } = await supabase.from("upload_rows").insert(uploadRows.slice(i, i + 500));
-        if (error) throw new Error(error.message || error.details || JSON.stringify(error));
-      }
 
       toast({
         title: canApprove ? "Submit thành công!" : "Gửi thành công! Chờ phê duyệt.",
@@ -597,6 +622,7 @@ export default function UploadPage() {
           : `${totalRows.toLocaleString()} dòng đã gửi. Người phê duyệt sẽ xem xét.`,
       });
       handleClearFile();
+
     } catch (err) {
       const msg = err instanceof Error ? err.message : JSON.stringify(err);
       toast({ title: "Submit thất bại", description: msg, variant: "destructive" });
@@ -606,8 +632,7 @@ export default function UploadPage() {
   };
 
   const canSubmit = !!loggedInUser && canCreate && !!resolvedCompanyId && !!resolvedCCId
-    && validationStatus === "valid" && !isSubmitting;
-
+    && validationStatus === "valid" && !!uploadFile && !isSubmitting;
   const notLoggedIn = !loggedInUser;
 
   return (
@@ -632,20 +657,15 @@ export default function UploadPage() {
                 <span className="hidden sm:inline">Đang tải...</span>
               </span>
             )}
-            {/* History button - visible if user can read OR can approve */}
+            {/* History button */}
             {loggedInUser && (canRead || canApprove) && (
               <button
-                onClick={() => { setHistoryOpen(true); setHistoryTab(canApprove && pendingBatches.length > 0 ? "pending" : "mine"); }}
-                className="relative flex items-center gap-1.5 border border-border/60 rounded-lg px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors"
-                title="Lịch sử file"
+                onClick={() => setHistoryOpen(true)}
+                className="flex items-center gap-1.5 border border-border/60 rounded-lg px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors"
+                title="Lịch sử file của tôi"
               >
                 <History className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Lịch sử</span>
-                {canApprove && pendingBatches.length > 0 && (
-                  <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] bg-amber-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center px-1">
-                    {pendingBatches.length}
-                  </span>
-                )}
               </button>
             )}
             {/* Approver badge */}
@@ -656,59 +676,56 @@ export default function UploadPage() {
               </div>
             )}
             {loggedInUser ? (
-              <div className="flex items-center gap-2">
-                {/* Switch user */}
-                <Popover open={loginPopoverOpen} onOpenChange={setLoginPopoverOpen}>
-                  <PopoverTrigger asChild>
-                    <button className="flex items-center gap-2 bg-primary/8 border border-primary/15 rounded-full pl-2 pr-3 py-1.5 hover:bg-primary/12 transition-colors" data-testid="user-pill">
-                      <div className={cn("w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold",
-                        avatarColors[allUsers.findIndex(u => u.id === loggedInUser.id) % avatarColors.length])}>
-                        {getInitials(loggedInUser.full_name)}
-                      </div>
-                      <span className="text-xs font-semibold text-primary" data-testid="text-logged-user">
-                        {loggedInUser.full_name}
-                      </span>
-                      <ChevronDown className="w-3 h-3 text-primary/60" />
+              <Popover open={loginPopoverOpen} onOpenChange={setLoginPopoverOpen}>
+                <PopoverTrigger asChild>
+                  <button className="flex items-center gap-2 bg-primary/8 border border-primary/15 rounded-full pl-2 pr-3 py-1.5 hover:bg-primary/12 transition-colors" data-testid="user-pill">
+                    <div className={cn("w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold",
+                      avatarColors[allUsers.findIndex(u => u.id === loggedInUser.id) % avatarColors.length])}>
+                      {getInitials(loggedInUser.full_name)}
+                    </div>
+                    <span className="text-xs font-semibold text-primary" data-testid="text-logged-user">
+                      {loggedInUser.full_name}
+                    </span>
+                    <ChevronDown className="w-3 h-3 text-primary/60" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-72 p-2 rounded-2xl shadow-lg">
+                  <p className="text-[11px] font-semibold text-muted-foreground px-2 py-1.5 uppercase tracking-wide">Chuyển tài khoản</p>
+                  <div className="space-y-0.5">
+                    {allUsers.filter(u => u.is_active).map((u, i) => {
+                      const uMappings = allMappings.filter(m => m.user_id === u.id);
+                      const uCompanies = [...new Set(uMappings.map(m => m.company_id))];
+                      const isActive = loggedInUser.id === u.id;
+                      return (
+                        <button key={u.id} onClick={() => handleLoginAs(u)}
+                          className={cn(
+                            "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors",
+                            isActive ? "bg-primary/10" : "hover:bg-muted"
+                          )}>
+                          <div className={cn("w-9 h-9 rounded-xl flex items-center justify-center text-white text-sm font-bold shrink-0", avatarColors[i % avatarColors.length])}>
+                            {getInitials(u.full_name)}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className={cn("text-xs font-semibold truncate", isActive ? "text-primary" : "text-foreground")}>{u.full_name}</p>
+                            <p className="text-[10px] text-muted-foreground truncate">{u.email}</p>
+                            <div className="flex gap-2 mt-0.5">
+                              <span className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-muted-foreground">{uCompanies.length} cty</span>
+                              <span className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-muted-foreground">{uMappings.length} CC</span>
+                            </div>
+                          </div>
+                          {isActive && <CheckCircle2 className="w-4 h-4 text-primary shrink-0" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="border-t border-border/50 mt-2 pt-2">
+                    <button onClick={handleLogout}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs text-red-500 hover:bg-red-50 transition-colors">
+                      <LogOut className="w-3.5 h-3.5" /> Đăng xuất
                     </button>
-                  </PopoverTrigger>
-                  <PopoverContent align="end" className="w-72 p-2 rounded-2xl shadow-lg">
-                    <p className="text-[11px] font-semibold text-muted-foreground px-2 py-1.5 uppercase tracking-wide">Chuyển tài khoản</p>
-                    <div className="space-y-0.5">
-                      {allUsers.filter(u => u.is_active).map((u, i) => {
-                        const uMappings = allMappings.filter(m => m.user_id === u.id);
-                        const uCompanies = [...new Set(uMappings.map(m => m.company_id))];
-                        const isActive = loggedInUser.id === u.id;
-                        return (
-                          <button key={u.id} onClick={() => handleLoginAs(u)}
-                            className={cn(
-                              "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors",
-                              isActive ? "bg-primary/10" : "hover:bg-muted"
-                            )}>
-                            <div className={cn("w-9 h-9 rounded-xl flex items-center justify-center text-white text-sm font-bold shrink-0", avatarColors[i % avatarColors.length])}>
-                              {getInitials(u.full_name)}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <p className={cn("text-xs font-semibold truncate", isActive ? "text-primary" : "text-foreground")}>{u.full_name}</p>
-                              <p className="text-[10px] text-muted-foreground truncate">{u.email}</p>
-                              <div className="flex gap-2 mt-0.5">
-                                <span className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-muted-foreground">{uCompanies.length} cty</span>
-                                <span className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-muted-foreground">{uMappings.length} CC</span>
-                              </div>
-                            </div>
-                            {isActive && <CheckCircle2 className="w-4 h-4 text-primary shrink-0" />}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <div className="border-t border-border/50 mt-2 pt-2">
-                      <button onClick={handleLogout}
-                        className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs text-red-500 hover:bg-red-50 transition-colors">
-                        <LogOut className="w-3.5 h-3.5" /> Đăng xuất
-                      </button>
-                    </div>
-                  </PopoverContent>
-                </Popover>
-              </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
             ) : (
               <Popover open={loginPopoverOpen} onOpenChange={setLoginPopoverOpen}>
                 <PopoverTrigger asChild>
@@ -757,7 +774,7 @@ export default function UploadPage() {
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-4 space-y-4">
 
-        {/* ── Top row: info strip (compact, inline) ── */}
+        {/* ── Info strip ── */}
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-1.5 bg-white border border-border/60 rounded-lg px-3 py-1.5 shadow-xs">
             <Calendar className="w-3 h-3 text-primary" />
@@ -775,7 +792,6 @@ export default function UploadPage() {
               {loggedInUser?.full_name ?? "Chưa đăng nhập"}
             </span>
           </div>
-          {/* Summary breadcrumb when filters active */}
           {loggedInUser && (selectedCompanyId !== ALL || selectedCCId !== ALL) && (
             <div className="flex items-center gap-1 text-[11px] bg-primary/6 border border-primary/15 rounded-lg px-3 py-1.5">
               {selectedCompanyId !== ALL && <span className="font-medium text-primary">{selectedCompany?.company_id}</span>}
@@ -785,10 +801,9 @@ export default function UploadPage() {
           )}
         </div>
 
-        {/* ── Main 2-column row: [Dropdowns | Upload+Submit] ── */}
+        {/* ── Main 2-column: [Phân loại | Upload] ── */}
         <div className="flex gap-4 items-stretch">
-
-          {/* LEFT: Phân loại đơn vị (wider) */}
+          {/* LEFT: Phân loại đơn vị */}
           <div className="flex-1 bg-white border border-border/60 rounded-2xl shadow-sm overflow-hidden">
             <div className="px-5 pt-4 pb-3 border-b border-border/40 flex items-center gap-2">
               <Layers3 className="w-3.5 h-3.5 text-primary" />
@@ -861,7 +876,6 @@ export default function UploadPage() {
                   </Select>
                 </div>
               </div>
-
               {loggedInUser && (selectedCompanyId === ALL || selectedCCId === ALL) && (
                 <p className="text-[11px] text-amber-600 flex items-center gap-1">
                   <AlertCircle className="w-3 h-3 shrink-0" />
@@ -871,7 +885,7 @@ export default function UploadPage() {
             </div>
           </div>
 
-          {/* RIGHT: Upload + Submit (compact) */}
+          {/* RIGHT: Upload + Submit */}
           <div className="w-72 shrink-0 bg-white border border-border/60 rounded-2xl shadow-sm overflow-hidden flex flex-col">
             <div className="px-5 pt-4 pb-3 border-b border-border/40 flex items-center gap-2">
               <CloudUpload className="w-3.5 h-3.5 text-primary" />
@@ -882,7 +896,6 @@ export default function UploadPage() {
               <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls"
                 className="hidden" onChange={handleFileChange} data-testid="input-file" />
 
-              {/* Compact drop zone / file status */}
               {!fileName ? (
                 <div
                   onClick={() => fileInputRef.current?.click()}
@@ -922,16 +935,13 @@ export default function UploadPage() {
                     <p className="text-[10px] text-muted-foreground">{(fileSize / 1024).toFixed(1)} KB</p>
                     {validationStatus === "valid" && <p className="text-[10px] text-emerald-600 font-medium">{totalRows.toLocaleString()} dòng · Hợp lệ</p>}
                     {validationStatus === "invalid" && (
-                      <p className="text-[10px] text-red-500 font-medium">
-                        {validationErrors.length} lỗi phát hiện ↓
-                      </p>
+                      <p className="text-[10px] text-red-500 font-medium">{validationErrors.length} lỗi phát hiện ↓</p>
                     )}
                   </div>
                   <button onClick={handleClearFile} className="text-muted-foreground hover:text-foreground text-[10px] shrink-0 mt-0.5">✕</button>
                 </div>
               )}
 
-              {/* Chọn file button */}
               <Button variant="outline" size="sm"
                 onClick={() => fileInputRef.current?.click()}
                 className="gap-1.5 rounded-xl h-8 border-border/70 text-xs w-full" data-testid="button-upload">
@@ -939,10 +949,8 @@ export default function UploadPage() {
                 {fileName ? "Thay file khác" : "Chọn file"}
               </Button>
 
-              {/* Spacer to push submit to bottom */}
               <div className="flex-1" />
 
-              {/* Submit */}
               <Button
                 onClick={handleSubmit}
                 disabled={!canSubmit}
@@ -961,7 +969,7 @@ export default function UploadPage() {
           </div>
         </div>
 
-        {/* ── Validation error panel ── */}
+        {/* ── Validation errors ── */}
         {validationErrors.length > 0 && (
           <div className="bg-red-50 border border-red-200 rounded-2xl overflow-hidden">
             <div className="px-5 py-3 border-b border-red-200 flex items-center gap-2">
@@ -997,7 +1005,6 @@ export default function UploadPage() {
               </span>
             )}
           </div>
-
           {rows.length > 0 ? (
             <div className="overflow-x-auto max-h-[420px] overflow-y-auto">
               <Table data-testid="table-preview">
@@ -1043,18 +1050,130 @@ export default function UploadPage() {
             </div>
           )}
         </div>
+
+        {/* ── Approver Pending Panel (inline, below preview) ── */}
+        {canApprove && loggedInUser && (
+          <div className="bg-white border border-amber-200/70 rounded-2xl shadow-sm overflow-hidden">
+            <div className="px-6 py-3.5 border-b border-amber-100 flex items-center gap-2 bg-gradient-to-r from-amber-50/80 to-white">
+              <ShieldCheck className="w-4 h-4 text-amber-600 shrink-0" />
+              <h2 className="text-sm font-semibold text-foreground">Hàng chờ phê duyệt</h2>
+              {pendingBatches.length > 0 && (
+                <Badge className="bg-amber-500 hover:bg-amber-500 text-white text-[10px] px-1.5 h-5">
+                  {pendingBatches.length}
+                </Badge>
+              )}
+              <button
+                onClick={loadPendingBatches}
+                disabled={pendingLoading}
+                className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                title="Làm mới"
+              >
+                <RefreshCw className={cn("w-3.5 h-3.5", pendingLoading && "animate-spin")} />
+                <span className="hidden sm:inline">Làm mới</span>
+              </button>
+            </div>
+
+            {pendingLoading && pendingBatches.length === 0 ? (
+              <div className="flex items-center justify-center py-10">
+                <Loader2 className="w-5 h-5 animate-spin text-primary" />
+                <span className="ml-2 text-sm text-muted-foreground">Đang tải...</span>
+              </div>
+            ) : pendingBatches.length === 0 ? (
+              <div className="py-12 flex flex-col items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-emerald-50 flex items-center justify-center">
+                  <FileCheck2 className="w-6 h-6 text-emerald-400" />
+                </div>
+                <p className="text-sm text-muted-foreground">Không có file chờ phê duyệt</p>
+                <p className="text-xs text-muted-foreground/70">Tất cả đã được xử lý</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-border/30">
+                {pendingBatches.map((batch) => {
+                  const uploaderName = allUsers.find(u => u.id === batch.uploaded_by)?.full_name ?? `#${batch.uploaded_by}`;
+                  const isBusy = approvingId === batch.id;
+                  const date = new Date(batch.submitted_at).toLocaleString("vi-VN", {
+                    day: "2-digit", month: "2-digit", year: "numeric",
+                    hour: "2-digit", minute: "2-digit",
+                  });
+                  return (
+                    <div key={batch.id}
+                      className={cn(
+                        "flex items-center gap-4 px-6 py-3.5 hover:bg-muted/20 transition-colors",
+                        isBusy && "opacity-60"
+                      )}>
+                      {/* Icon */}
+                      <div className="w-8 h-8 rounded-lg bg-amber-50 border border-amber-100 flex items-center justify-center shrink-0">
+                        <FileClock className="w-4 h-4 text-amber-500" />
+                      </div>
+
+                      {/* File info */}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-semibold text-foreground truncate max-w-xs">
+                          {batch.stored_file_name ?? batch.original_file_name ?? batch.file_name}
+                        </p>
+                        <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+                          <span className="text-[10px] text-muted-foreground">by {uploaderName}</span>
+                          <span className="text-[10px] text-muted-foreground">{date}</span>
+                          <span className="text-[10px] font-mono text-muted-foreground">{batch.total_rows.toLocaleString()} dòng</span>
+                          {batch.file_size_bytes && (
+                            <span className="text-[10px] text-muted-foreground">{(batch.file_size_bytes / 1024).toFixed(1)} KB</span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* View button */}
+                      {batch.storage_path && (
+                        <button
+                          onClick={() => handleViewBatch(batch)}
+                          className="shrink-0 flex items-center gap-1 text-[10px] text-primary border border-primary/20 bg-primary/5 hover:bg-primary/10 rounded-md px-2.5 py-1.5 transition-colors"
+                        >
+                          <Eye className="w-3 h-3" /> Xem
+                        </button>
+                      )}
+
+                      {/* Approve / Reject buttons */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          onClick={() => handleApprove(batch.id)}
+                          disabled={isBusy}
+                          className="flex items-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-60"
+                        >
+                          {isBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <ThumbsUp className="w-3 h-3" />}
+                          Duyệt
+                        </button>
+                        <button
+                          onClick={() => handleReject(batch.id)}
+                          disabled={isBusy}
+                          className="flex items-center gap-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-60"
+                        >
+                          {isBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <ThumbsDown className="w-3 h-3" />}
+                          Từ chối
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </main>
 
-      {/* ── Batch Row Preview Dialog ── */}
-      <Dialog open={!!previewBatch} onOpenChange={(open) => { if (!open) setPreviewBatch(null); }}>
+      {/* ── Batch Preview Dialog ── */}
+      <Dialog open={!!previewBatch} onOpenChange={(open) => { if (!open) { setPreviewBatch(null); setBatchRows([]); setBatchPreviewSource(null); } }}>
         <DialogContent className="max-w-5xl w-full max-h-[85vh] flex flex-col p-0">
           <DialogHeader className="px-6 py-4 border-b border-border/40 flex-shrink-0">
             <DialogTitle className="flex items-center gap-2 text-sm">
               <FileSpreadsheet className="w-4 h-4 text-primary" />
-              {previewBatch?.original_file_name ?? previewBatch?.file_name}
+              {previewBatch?.stored_file_name ?? previewBatch?.original_file_name ?? previewBatch?.file_name}
               <span className="text-muted-foreground font-normal text-xs">
-                #{previewBatch?.id} · {previewBatch?.total_rows.toLocaleString()} dòng
+                #{previewBatch?.id} · {previewBatch?.total_rows?.toLocaleString()} dòng
               </span>
+              {batchPreviewSource === "s3" && (
+                <span className="text-[10px] bg-blue-50 border border-blue-200 text-blue-600 rounded px-1.5 py-0.5 font-medium">
+                  <Download className="w-2.5 h-2.5 inline mr-0.5" />S3
+                </span>
+              )}
             </DialogTitle>
           </DialogHeader>
           {batchRowsLoading ? (
@@ -1065,7 +1184,10 @@ export default function UploadPage() {
           ) : batchRows.length === 0 ? (
             <div className="flex flex-col items-center py-16 gap-3">
               <FileSpreadsheet className="w-10 h-10 text-muted-foreground/30" />
-              <p className="text-sm text-muted-foreground">Không có dữ liệu</p>
+              <p className="text-sm text-muted-foreground">Không có dữ liệu để hiển thị</p>
+              {!previewBatch?.storage_path && (
+                <p className="text-xs text-muted-foreground/70">File cũ không có dữ liệu lưu trữ</p>
+              )}
             </div>
           ) : (
             <div className="flex-1 overflow-auto">
@@ -1073,20 +1195,32 @@ export default function UploadPage() {
                 <TableHeader className="sticky top-0 z-10">
                   <TableRow className="bg-[#f4f6fb] hover:bg-[#f4f6fb] border-b border-border/50">
                     <TableHead className="text-[10px] font-bold w-10 px-3 py-2.5 text-center text-muted-foreground">#</TableHead>
-                    {ROW_COLUMN_MAP.map(({ label }) => (
-                      <TableHead key={label} className="text-[10px] font-bold whitespace-nowrap px-3 py-2.5 text-foreground border-l border-border/30">{label}</TableHead>
-                    ))}
+                    {batchPreviewSource === "s3"
+                      ? REQUIRED_COLUMNS.map((col) => (
+                          <TableHead key={col} className="text-[10px] font-bold whitespace-nowrap px-3 py-2.5 text-foreground border-l border-border/30">{col}</TableHead>
+                        ))
+                      : ROW_COLUMN_MAP.map(({ label }) => (
+                          <TableHead key={label} className="text-[10px] font-bold whitespace-nowrap px-3 py-2.5 text-foreground border-l border-border/30">{label}</TableHead>
+                        ))
+                    }
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {batchRows.map((row, idx) => (
                     <TableRow key={idx} className={cn("border-b border-border/30 hover:bg-primary/3", idx % 2 === 0 ? "bg-white" : "bg-[#fafbfd]")}>
                       <TableCell className="text-[10px] text-muted-foreground text-center px-3 py-1.5 font-mono">{idx + 1}</TableCell>
-                      {ROW_COLUMN_MAP.map(({ db, label }) => (
-                        <TableCell key={db} className="text-[11px] px-3 py-1.5 whitespace-nowrap border-l border-border/20 font-mono">
-                          {row[db] !== null && row[db] !== undefined ? String(row[db]) : <span className="text-muted-foreground/40">—</span>}
-                        </TableCell>
-                      ))}
+                      {batchPreviewSource === "s3"
+                        ? REQUIRED_COLUMNS.map((col) => (
+                            <TableCell key={col} className="text-[11px] px-3 py-1.5 whitespace-nowrap border-l border-border/20 font-mono">
+                              {row[col] !== null && row[col] !== undefined ? String(row[col]) : <span className="text-muted-foreground/40">—</span>}
+                            </TableCell>
+                          ))
+                        : ROW_COLUMN_MAP.map(({ db, label }) => (
+                            <TableCell key={db} className="text-[11px] px-3 py-1.5 whitespace-nowrap border-l border-border/20 font-mono">
+                              {row[db] !== null && row[db] !== undefined ? String(row[db]) : <span className="text-muted-foreground/40">—</span>}
+                            </TableCell>
+                          ))
+                      }
                     </TableRow>
                   ))}
                 </TableBody>
@@ -1096,7 +1230,7 @@ export default function UploadPage() {
         </DialogContent>
       </Dialog>
 
-      {/* ── History & Approval Sheet ── */}
+      {/* ── History Sheet (my files only) ── */}
       <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
         <SheetContent className="w-full sm:w-[520px] sm:max-w-[520px] p-0 flex flex-col" side="right">
           <SheetHeader className="px-6 py-4 border-b border-border/50 flex-shrink-0">
@@ -1105,151 +1239,60 @@ export default function UploadPage() {
                 <History className="w-4 h-4 text-primary" />
                 Lịch sử File Upload
               </SheetTitle>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={loadHistory}
-                  disabled={historyLoading}
-                  className="text-muted-foreground hover:text-foreground p-1 rounded-md transition-colors"
-                  title="Làm mới"
-                >
-                  <RefreshCw className={cn("w-3.5 h-3.5", historyLoading && "animate-spin")} />
-                </button>
-              </div>
+              <button
+                onClick={loadHistory}
+                disabled={historyLoading}
+                className="text-muted-foreground hover:text-foreground p-1 rounded-md transition-colors"
+                title="Làm mới"
+              >
+                <RefreshCw className={cn("w-3.5 h-3.5", historyLoading && "animate-spin")} />
+              </button>
             </div>
             {loggedInUser && (
-              <p className="text-xs text-muted-foreground mt-0.5">
-                {loggedInUser.full_name}
-                {canApprove && (
-                  <span className="ml-2 inline-flex items-center gap-1 text-amber-600">
-                    <ShieldCheck className="w-3 h-3" /> Người phê duyệt
-                  </span>
-                )}
-              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">{loggedInUser.full_name}</p>
             )}
           </SheetHeader>
 
-          <Tabs value={historyTab} onValueChange={(v) => setHistoryTab(v as "mine" | "pending")} className="flex-1 flex flex-col min-h-0">
-            <TabsList className="mx-4 mt-3 mb-0 grid w-auto self-start gap-1 h-auto bg-muted/50 p-1 rounded-xl" style={{ gridTemplateColumns: canApprove ? "1fr 1fr" : "1fr" }}>
-              <TabsTrigger value="mine" className="text-xs rounded-lg px-4 py-1.5 data-[state=active]:bg-white data-[state=active]:shadow-sm">
-                <FileSpreadsheet className="w-3 h-3 mr-1.5" />
-                File của tôi
-                <Badge variant="secondary" className="ml-1.5 text-[9px] px-1.5 h-4">{historyBatches.length}</Badge>
-              </TabsTrigger>
-              {canApprove && (
-                <TabsTrigger value="pending" className="text-xs rounded-lg px-4 py-1.5 data-[state=active]:bg-white data-[state=active]:shadow-sm">
-                  <FileClock className="w-3 h-3 mr-1.5" />
-                  Chờ duyệt
-                  {pendingBatches.length > 0 && (
-                    <Badge className="ml-1.5 text-[9px] px-1.5 h-4 bg-amber-500 hover:bg-amber-500">{pendingBatches.length}</Badge>
-                  )}
-                </TabsTrigger>
-              )}
-            </TabsList>
-
-            {/* My Files tab */}
-            <TabsContent value="mine" className="flex-1 min-h-0 mt-0 data-[state=active]:flex data-[state=active]:flex-col">
-              <ScrollArea className="flex-1 px-4 pt-3">
-                {historyLoading ? (
-                  <div className="flex items-center justify-center py-16">
-                    <Loader2 className="w-6 h-6 animate-spin text-primary" />
-                  </div>
-                ) : historyBatches.length === 0 ? (
-                  <div className="flex flex-col items-center py-16 gap-3">
-                    <div className="w-12 h-12 rounded-2xl bg-muted flex items-center justify-center">
-                      <FileSpreadsheet className="w-6 h-6 text-muted-foreground/40" />
-                    </div>
-                    <p className="text-sm text-muted-foreground">Chưa có file nào được upload</p>
-                  </div>
-                ) : (
-                  <div className="space-y-2 pb-6">
-                    {historyBatches.map((batch) => (
-                      <BatchCard
-                        key={batch.id}
-                        batch={batch}
-                        uploaderName={allUsers.find(u => u.id === batch.uploaded_by)?.full_name}
-                        canApprove={canApprove}
-                        canRead={canRead}
-                        approvingId={approvingId}
-                        onApprove={handleApprove}
-                        onReject={handleReject}
-                        onViewBatch={handleViewBatch}
-                        showActions={false}
-                      />
-                    ))}
-                  </div>
-                )}
-              </ScrollArea>
-            </TabsContent>
-
-            {/* Pending approval tab */}
-            {canApprove && (
-              <TabsContent value="pending" className="flex-1 min-h-0 mt-0 data-[state=active]:flex data-[state=active]:flex-col">
-                <ScrollArea className="flex-1 px-4 pt-3">
-                  {historyLoading ? (
-                    <div className="flex items-center justify-center py-16">
-                      <Loader2 className="w-6 h-6 animate-spin text-primary" />
-                    </div>
-                  ) : pendingBatches.length === 0 ? (
-                    <div className="flex flex-col items-center py-16 gap-3">
-                      <div className="w-12 h-12 rounded-2xl bg-emerald-50 flex items-center justify-center">
-                        <FileCheck2 className="w-6 h-6 text-emerald-500" />
-                      </div>
-                      <p className="text-sm text-muted-foreground">Không có file chờ phê duyệt</p>
-                      <p className="text-xs text-muted-foreground/70">Tất cả đã được xử lý</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-2 pb-6">
-                      <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-center gap-1.5">
-                        <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                        {pendingBatches.length} file đang chờ phê duyệt của bạn
-                      </p>
-                      {pendingBatches.map((batch) => (
-                        <BatchCard
-                          key={batch.id}
-                          batch={batch}
-                          uploaderName={allUsers.find(u => u.id === batch.uploaded_by)?.full_name}
-                          canApprove={canApprove}
-                          canRead={canRead}
-                          approvingId={approvingId}
-                          onApprove={handleApprove}
-                          onReject={handleReject}
-                          onViewBatch={handleViewBatch}
-                          showActions={true}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </ScrollArea>
-              </TabsContent>
+          <ScrollArea className="flex-1 px-4 pt-3">
+            {historyLoading ? (
+              <div className="flex items-center justify-center py-16">
+                <Loader2 className="w-6 h-6 animate-spin text-primary" />
+              </div>
+            ) : historyBatches.length === 0 ? (
+              <div className="flex flex-col items-center py-16 gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-muted flex items-center justify-center">
+                  <FileSpreadsheet className="w-6 h-6 text-muted-foreground/40" />
+                </div>
+                <p className="text-sm text-muted-foreground">Chưa có file nào được upload</p>
+              </div>
+            ) : (
+              <div className="space-y-2 pb-6">
+                {historyBatches.map((batch) => (
+                  <HistoryBatchCard
+                    key={batch.id}
+                    batch={batch}
+                    canRead={canRead}
+                    onViewBatch={handleViewBatch}
+                  />
+                ))}
+              </div>
             )}
-          </Tabs>
+          </ScrollArea>
         </SheetContent>
       </Sheet>
     </div>
   );
 }
 
-// ── BatchCard sub-component ────────────────────────────────
-function BatchCard({
+// ── History Batch Card ─────────────────────────────────────
+function HistoryBatchCard({
   batch,
-  uploaderName,
-  canApprove,
   canRead,
-  approvingId,
-  onApprove,
-  onReject,
   onViewBatch,
-  showActions,
 }: {
   batch: BatchRecord;
-  uploaderName?: string;
-  canApprove: boolean;
   canRead: boolean;
-  approvingId: number | null;
-  onApprove: (id: number) => void;
-  onReject: (id: number) => void;
   onViewBatch: (batch: BatchRecord) => void;
-  showActions: boolean;
 }) {
   const statusConfig = {
     draft: { label: "Chờ duyệt", icon: FileClock, className: "bg-amber-50 text-amber-700 border-amber-200" },
@@ -1258,7 +1301,6 @@ function BatchCard({
   };
   const cfg = statusConfig[batch.status] ?? statusConfig.draft;
   const StatusIcon = cfg.icon;
-  const isBusy = approvingId === batch.id;
   const date = new Date(batch.submitted_at).toLocaleString("vi-VN", {
     day: "2-digit", month: "2-digit", year: "numeric",
     hour: "2-digit", minute: "2-digit",
@@ -1268,12 +1310,16 @@ function BatchCard({
     <div className="border border-border/60 rounded-xl p-3.5 bg-white hover:shadow-sm transition-shadow">
       <div className="flex items-start gap-3">
         <div className="w-9 h-9 rounded-lg bg-muted flex items-center justify-center shrink-0">
-          <StatusIcon className={cn("w-4 h-4", batch.status === "completed" ? "text-emerald-500" : batch.status === "failed" ? "text-red-500" : "text-amber-500")} />
+          <StatusIcon className={cn("w-4 h-4",
+            batch.status === "completed" ? "text-emerald-500" :
+            batch.status === "failed" ? "text-red-500" : "text-amber-500"
+          )} />
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <p className="text-xs font-semibold text-foreground truncate max-w-[200px]" title={batch.original_file_name ?? batch.file_name}>
-              {batch.original_file_name ?? batch.file_name}
+            <p className="text-xs font-semibold text-foreground truncate max-w-[200px]"
+              title={batch.stored_file_name ?? batch.original_file_name ?? batch.file_name}>
+              {batch.stored_file_name ?? batch.original_file_name ?? batch.file_name}
             </p>
             <span className={cn("text-[10px] font-medium border px-1.5 py-0.5 rounded-md", cfg.className)}>
               {cfg.label}
@@ -1283,47 +1329,22 @@ function BatchCard({
             <span className="text-[10px] text-muted-foreground">#{batch.id}</span>
             <span className="text-[10px] text-muted-foreground">{date}</span>
             <span className="text-[10px] font-mono text-muted-foreground">{batch.total_rows.toLocaleString()} dòng</span>
+            {batch.storage_path && (
+              <span className="text-[10px] text-blue-500 flex items-center gap-0.5">
+                <Download className="w-2.5 h-2.5" /> S3
+              </span>
+            )}
           </div>
-          {uploaderName && canApprove && (
-            <p className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
-              <Eye className="w-3 h-3" /> {uploaderName}
-            </p>
-          )}
         </div>
-
-        {/* View data button */}
-        {canRead && (
+        {canRead && batch.storage_path && (
           <button
             onClick={() => onViewBatch(batch)}
             className="shrink-0 flex items-center gap-1 text-[10px] text-primary border border-primary/20 bg-primary/5 hover:bg-primary/10 rounded-md px-2 py-1 transition-colors"
           >
-            <Eye className="w-3 h-3" />
-            Xem
+            <Eye className="w-3 h-3" /> Xem
           </button>
         )}
       </div>
-
-      {/* Approve / Reject buttons for approver */}
-      {showActions && canApprove && batch.status === "draft" && (
-        <div className="flex gap-2 mt-3 pt-3 border-t border-border/40">
-          <button
-            onClick={() => onApprove(batch.id)}
-            disabled={isBusy}
-            className="flex-1 flex items-center justify-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-60"
-          >
-            {isBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ThumbsUp className="w-3.5 h-3.5" />}
-            Phê duyệt
-          </button>
-          <button
-            onClick={() => onReject(batch.id)}
-            disabled={isBusy}
-            className="flex-1 flex items-center justify-center gap-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-60"
-          >
-            {isBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ThumbsDown className="w-3.5 h-3.5" />}
-            Từ chối
-          </button>
-        </div>
-      )}
     </div>
   );
 }

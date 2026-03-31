@@ -30,3 +30,8 @@ timeoutMs = 20000
 [userenv.shared]
 VITE_SUPABASE_URL = "https://xmcdfriczynnjlarnzep.supabase.co"
 VITE_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhtY2RmcmljenlubmpsYXJuemVwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ5MzExOTMsImV4cCI6MjA5MDUwNzE5M30.8CeVW5qQGdfsclhMKf_lKx94aE-1tTa8Svj5JrG2qe4"
+S3_ENDPOINT = "https://xmcdfriczynnjlarnzep.storage.supabase.co/storage/v1/s3"
+S3_REGION = "ap-southeast-2"
+S3_ACCESS_KEY_ID = "22aab9299df639c40d931fbc660d81d2"
+S3_SECRET_ACCESS_KEY = "021d6eaf407ebb9ffa257f895128908caf265c06cf9eac9801fee11223fa0ff1"
+S3_BUCKET = "KeToan"

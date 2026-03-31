@@ -39,6 +39,11 @@ export interface UploadBatchInsert {
   success_rows: number;
   failed_rows: number;
   status: "draft" | "completed" | "failed";
+  storage_path?: string | null;
+  storage_bucket?: string | null;
+  mime_type?: string | null;
+  file_size_bytes?: number | null;
+  stored_file_name?: string | null;
 }
 
 export interface UploadRowInsert {
