@@ -340,33 +340,6 @@ export default function UploadPage() {
           </div>
 
           <div className="px-6 py-5">
-            {/* Step indicators */}
-            <div className="flex items-start gap-0 mb-5">
-              {/* Step 1 */}
-              <div className="flex flex-col items-center gap-1.5 min-w-[5rem]">
-                <StepBadge n={1} active={!step1Done} done={step1Done} />
-                <span className={cn("text-[10px] font-medium text-center", step1Done ? "text-primary" : "text-muted-foreground")}>
-                  Khối
-                </span>
-              </div>
-              <div className={cn("flex-1 h-px mt-3.5 mx-1 transition-all duration-300", step1Done ? "bg-primary/40" : "bg-border")} />
-              {/* Step 2 */}
-              <div className="flex flex-col items-center gap-1.5 min-w-[5rem]">
-                <StepBadge n={2} active={step1Done && !step2Done} done={step2Done} />
-                <span className={cn("text-[10px] font-medium text-center", step2Done ? "text-primary" : "text-muted-foreground")}>
-                  Công ty
-                </span>
-              </div>
-              <div className={cn("flex-1 h-px mt-3.5 mx-1 transition-all duration-300", step2Done ? "bg-primary/40" : "bg-border")} />
-              {/* Step 3 */}
-              <div className="flex flex-col items-center gap-1.5 min-w-[5rem]">
-                <StepBadge n={3} active={step2Done && !step3Done} done={step3Done} />
-                <span className={cn("text-[10px] font-medium text-center", step3Done ? "text-primary" : "text-muted-foreground")}>
-                  Cost Center
-                </span>
-              </div>
-            </div>
-
             {/* Dropdowns */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-2">
@@ -559,25 +532,6 @@ export default function UploadPage() {
               </Button>
             </div>
 
-            {/* Submit checklist */}
-            {!canSubmit && (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {[
-                  { label: "Đăng nhập", done: !!loggedInUser },
-                  { label: "Chọn đơn vị", done: step3Done },
-                  { label: "Upload file", done: !!fileName },
-                  { label: "File hợp lệ", done: validationStatus === "valid" },
-                ].map(({ label, done }) => (
-                  <div key={label} className={cn(
-                    "flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs border",
-                    done ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-muted/50 border-border/60 text-muted-foreground"
-                  )}>
-                    {done ? <CheckCircle2 className="w-3 h-3 shrink-0" /> : <div className="w-3 h-3 rounded-full border border-current shrink-0" />}
-                    {label}
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         </div>
 
