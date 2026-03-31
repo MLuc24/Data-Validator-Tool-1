@@ -6,6 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -47,6 +48,31 @@ interface BatchRecord {
   submitted_at: string;
   note: string | null;
 }
+
+interface UserFilePermissions {
+  user_id: number;
+  can_create: boolean;
+  can_read: boolean;
+  can_update: boolean;
+  can_approve: boolean;
+}
+
+type BatchRow = Record<string, string | number | null>;
+
+const ROW_COLUMN_MAP: { db: string; label: string }[] = [
+  { db: "ngay", label: "Ngày" },
+  { db: "ma_he_thong", label: "Mã HT" },
+  { db: "nhom_chi_tieu", label: "Nhóm CT" },
+  { db: "khoan_muc", label: "Khoản mục" },
+  { db: "tieu_muc", label: "Tiểu mục" },
+  { db: "thuoc_tinh", label: "Thuộc tính" },
+  { db: "noi_dung", label: "Nội dung" },
+  { db: "cong_ty", label: "Công ty" },
+  { db: "loai_du_lieu", label: "Loại DL" },
+  { db: "khoi", label: "Khối" },
+  { db: "bo_phan", label: "Bộ phận" },
+  { db: "so_tien", label: "Số tiền" },
+];
 
 function parseDate(raw: string | number | undefined): string | null {
   if (!raw) return null;
@@ -200,8 +226,11 @@ export default function UploadPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
-  // ── Approver role ──────────────────────────────────────────
-  const [isApprover, setIsApprover] = useState(false);
+  // ── Permissions (from users_file table) ───────────────────
+  const [userPerms, setUserPerms] = useState<UserFilePermissions | null>(null);
+  const canCreate = userPerms?.can_create ?? false;
+  const canRead   = userPerms?.can_read   ?? false;
+  const canApprove = userPerms?.can_approve ?? false;
 
   // ── History / Approval panel ───────────────────────────────
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -211,23 +240,42 @@ export default function UploadPage() {
   const [approvingId, setApprovingId] = useState<number | null>(null);
   const [historyTab, setHistoryTab] = useState<"mine" | "pending">("mine");
 
-  // Detect approver role when user logs in
+  // ── Batch row preview ──────────────────────────────────────
+  const [previewBatch, setPreviewBatch] = useState<BatchRecord | null>(null);
+  const [batchRows, setBatchRows] = useState<BatchRow[]>([]);
+  const [batchRowsLoading, setBatchRowsLoading] = useState(false);
+
+  // Load permissions from users_file when user logs in
   useEffect(() => {
-    if (!loggedInUser) { setIsApprover(false); return; }
-    supabase.from("users").select("is_approver").eq("id", loggedInUser.id).single()
+    if (!loggedInUser) { setUserPerms(null); return; }
+    supabase.from("users_file")
+      .select("user_id, can_create, can_read, can_update, can_approve")
+      .eq("user_id", loggedInUser.id)
+      .single()
       .then(({ data, error }) => {
-        if (!error && data && (data as { is_approver?: boolean }).is_approver === true) {
-          setIsApprover(true);
-        } else {
-          setIsApprover(false);
-        }
+        setUserPerms(error || !data ? null : (data as UserFilePermissions));
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loggedInUser?.id]);
 
-  const loadHistory = async () => {
+  const handleViewBatch = async (batch: BatchRecord) => {
+    setPreviewBatch(batch);
+    setBatchRows([]);
+    setBatchRowsLoading(true);
+    const { data } = await supabase
+      .from("upload_rows")
+      .select("ngay, ma_he_thong, nhom_chi_tieu, khoan_muc, tieu_muc, thuoc_tinh, noi_dung, cong_ty, loai_du_lieu, khoi, bo_phan, so_tien")
+      .eq("batch_id", batch.id)
+      .order("row_no")
+      .limit(300);
+    setBatchRows((data ?? []) as BatchRow[]);
+    setBatchRowsLoading(false);
+  };
+
+  const loadHistory = async (approver?: boolean) => {
     if (!loggedInUser) return;
     setHistoryLoading(true);
+    const isAppr = approver ?? canApprove;
     try {
       const [myRes, pendingRes] = await Promise.all([
         supabase.from("upload_batches")
@@ -235,7 +283,7 @@ export default function UploadPage() {
           .eq("uploaded_by", loggedInUser.id)
           .order("submitted_at", { ascending: false })
           .limit(50),
-        isApprover
+        isAppr
           ? supabase.from("upload_batches")
               .select("*")
               .eq("status", "draft")
@@ -499,7 +547,7 @@ export default function UploadPage() {
         total_rows: totalRows,
         success_rows: rows.length,
         failed_rows: 0,
-        status: isApprover ? "completed" : "draft",
+        status: canApprove ? "completed" : "draft",
       };
 
       const { data: batchData, error: batchError } = await supabase
@@ -543,8 +591,8 @@ export default function UploadPage() {
       }
 
       toast({
-        title: isApprover ? "Submit thành công!" : "Gửi thành công! Chờ phê duyệt.",
-        description: isApprover
+        title: canApprove ? "Submit thành công!" : "Gửi thành công! Chờ phê duyệt.",
+        description: canApprove
           ? `${totalRows.toLocaleString()} dòng đã được lưu và phê duyệt.`
           : `${totalRows.toLocaleString()} dòng đã gửi. Người phê duyệt sẽ xem xét.`,
       });
@@ -557,7 +605,7 @@ export default function UploadPage() {
     }
   };
 
-  const canSubmit = !!loggedInUser && !!resolvedCompanyId && !!resolvedCCId
+  const canSubmit = !!loggedInUser && canCreate && !!resolvedCompanyId && !!resolvedCCId
     && validationStatus === "valid" && !isSubmitting;
 
   const notLoggedIn = !loggedInUser;
@@ -584,16 +632,16 @@ export default function UploadPage() {
                 <span className="hidden sm:inline">Đang tải...</span>
               </span>
             )}
-            {/* History button */}
-            {loggedInUser && (
+            {/* History button - visible if user can read OR can approve */}
+            {loggedInUser && (canRead || canApprove) && (
               <button
-                onClick={() => { setHistoryOpen(true); setHistoryTab(isApprover && pendingBatches.length > 0 ? "pending" : "mine"); }}
+                onClick={() => { setHistoryOpen(true); setHistoryTab(canApprove && pendingBatches.length > 0 ? "pending" : "mine"); }}
                 className="relative flex items-center gap-1.5 border border-border/60 rounded-lg px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors"
                 title="Lịch sử file"
               >
                 <History className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Lịch sử</span>
-                {isApprover && pendingBatches.length > 0 && (
+                {canApprove && pendingBatches.length > 0 && (
                   <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] bg-amber-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center px-1">
                     {pendingBatches.length}
                   </span>
@@ -601,7 +649,7 @@ export default function UploadPage() {
               </button>
             )}
             {/* Approver badge */}
-            {isApprover && (
+            {canApprove && (
               <div className="hidden sm:flex items-center gap-1 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
                 <ShieldCheck className="w-3 h-3 text-amber-600" />
                 <span className="text-[10px] font-semibold text-amber-700">Phê duyệt</span>
@@ -904,7 +952,7 @@ export default function UploadPage() {
               >
                 {isSubmitting
                   ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Đang gửi...</>
-                  : isApprover
+                  : canApprove
                     ? <><ShieldCheck className="w-3.5 h-3.5" />Submit & Duyệt</>
                     : <><ClipboardList className="w-3.5 h-3.5" />Gửi chờ duyệt</>
                 }
@@ -997,6 +1045,57 @@ export default function UploadPage() {
         </div>
       </main>
 
+      {/* ── Batch Row Preview Dialog ── */}
+      <Dialog open={!!previewBatch} onOpenChange={(open) => { if (!open) setPreviewBatch(null); }}>
+        <DialogContent className="max-w-5xl w-full max-h-[85vh] flex flex-col p-0">
+          <DialogHeader className="px-6 py-4 border-b border-border/40 flex-shrink-0">
+            <DialogTitle className="flex items-center gap-2 text-sm">
+              <FileSpreadsheet className="w-4 h-4 text-primary" />
+              {previewBatch?.original_file_name ?? previewBatch?.file_name}
+              <span className="text-muted-foreground font-normal text-xs">
+                #{previewBatch?.id} · {previewBatch?.total_rows.toLocaleString()} dòng
+              </span>
+            </DialogTitle>
+          </DialogHeader>
+          {batchRowsLoading ? (
+            <div className="flex items-center justify-center py-20">
+              <Loader2 className="w-7 h-7 animate-spin text-primary" />
+              <span className="ml-3 text-sm text-muted-foreground">Đang tải dữ liệu...</span>
+            </div>
+          ) : batchRows.length === 0 ? (
+            <div className="flex flex-col items-center py-16 gap-3">
+              <FileSpreadsheet className="w-10 h-10 text-muted-foreground/30" />
+              <p className="text-sm text-muted-foreground">Không có dữ liệu</p>
+            </div>
+          ) : (
+            <div className="flex-1 overflow-auto">
+              <Table>
+                <TableHeader className="sticky top-0 z-10">
+                  <TableRow className="bg-[#f4f6fb] hover:bg-[#f4f6fb] border-b border-border/50">
+                    <TableHead className="text-[10px] font-bold w-10 px-3 py-2.5 text-center text-muted-foreground">#</TableHead>
+                    {ROW_COLUMN_MAP.map(({ label }) => (
+                      <TableHead key={label} className="text-[10px] font-bold whitespace-nowrap px-3 py-2.5 text-foreground border-l border-border/30">{label}</TableHead>
+                    ))}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {batchRows.map((row, idx) => (
+                    <TableRow key={idx} className={cn("border-b border-border/30 hover:bg-primary/3", idx % 2 === 0 ? "bg-white" : "bg-[#fafbfd]")}>
+                      <TableCell className="text-[10px] text-muted-foreground text-center px-3 py-1.5 font-mono">{idx + 1}</TableCell>
+                      {ROW_COLUMN_MAP.map(({ db, label }) => (
+                        <TableCell key={db} className="text-[11px] px-3 py-1.5 whitespace-nowrap border-l border-border/20 font-mono">
+                          {row[db] !== null && row[db] !== undefined ? String(row[db]) : <span className="text-muted-foreground/40">—</span>}
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
       {/* ── History & Approval Sheet ── */}
       <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
         <SheetContent className="w-full sm:w-[520px] sm:max-w-[520px] p-0 flex flex-col" side="right">
@@ -1020,7 +1119,7 @@ export default function UploadPage() {
             {loggedInUser && (
               <p className="text-xs text-muted-foreground mt-0.5">
                 {loggedInUser.full_name}
-                {isApprover && (
+                {canApprove && (
                   <span className="ml-2 inline-flex items-center gap-1 text-amber-600">
                     <ShieldCheck className="w-3 h-3" /> Người phê duyệt
                   </span>
@@ -1030,13 +1129,13 @@ export default function UploadPage() {
           </SheetHeader>
 
           <Tabs value={historyTab} onValueChange={(v) => setHistoryTab(v as "mine" | "pending")} className="flex-1 flex flex-col min-h-0">
-            <TabsList className="mx-4 mt-3 mb-0 grid w-auto self-start gap-1 h-auto bg-muted/50 p-1 rounded-xl" style={{ gridTemplateColumns: isApprover ? "1fr 1fr" : "1fr" }}>
+            <TabsList className="mx-4 mt-3 mb-0 grid w-auto self-start gap-1 h-auto bg-muted/50 p-1 rounded-xl" style={{ gridTemplateColumns: canApprove ? "1fr 1fr" : "1fr" }}>
               <TabsTrigger value="mine" className="text-xs rounded-lg px-4 py-1.5 data-[state=active]:bg-white data-[state=active]:shadow-sm">
                 <FileSpreadsheet className="w-3 h-3 mr-1.5" />
                 File của tôi
                 <Badge variant="secondary" className="ml-1.5 text-[9px] px-1.5 h-4">{historyBatches.length}</Badge>
               </TabsTrigger>
-              {isApprover && (
+              {canApprove && (
                 <TabsTrigger value="pending" className="text-xs rounded-lg px-4 py-1.5 data-[state=active]:bg-white data-[state=active]:shadow-sm">
                   <FileClock className="w-3 h-3 mr-1.5" />
                   Chờ duyệt
@@ -1068,10 +1167,12 @@ export default function UploadPage() {
                         key={batch.id}
                         batch={batch}
                         uploaderName={allUsers.find(u => u.id === batch.uploaded_by)?.full_name}
-                        isApprover={isApprover}
+                        canApprove={canApprove}
+                        canRead={canRead}
                         approvingId={approvingId}
                         onApprove={handleApprove}
                         onReject={handleReject}
+                        onViewBatch={handleViewBatch}
                         showActions={false}
                       />
                     ))}
@@ -1081,7 +1182,7 @@ export default function UploadPage() {
             </TabsContent>
 
             {/* Pending approval tab */}
-            {isApprover && (
+            {canApprove && (
               <TabsContent value="pending" className="flex-1 min-h-0 mt-0 data-[state=active]:flex data-[state=active]:flex-col">
                 <ScrollArea className="flex-1 px-4 pt-3">
                   {historyLoading ? (
@@ -1107,10 +1208,12 @@ export default function UploadPage() {
                           key={batch.id}
                           batch={batch}
                           uploaderName={allUsers.find(u => u.id === batch.uploaded_by)?.full_name}
-                          isApprover={isApprover}
+                          canApprove={canApprove}
+                          canRead={canRead}
                           approvingId={approvingId}
                           onApprove={handleApprove}
                           onReject={handleReject}
+                          onViewBatch={handleViewBatch}
                           showActions={true}
                         />
                       ))}
@@ -1130,18 +1233,22 @@ export default function UploadPage() {
 function BatchCard({
   batch,
   uploaderName,
-  isApprover,
+  canApprove,
+  canRead,
   approvingId,
   onApprove,
   onReject,
+  onViewBatch,
   showActions,
 }: {
   batch: BatchRecord;
   uploaderName?: string;
-  isApprover: boolean;
+  canApprove: boolean;
+  canRead: boolean;
   approvingId: number | null;
   onApprove: (id: number) => void;
   onReject: (id: number) => void;
+  onViewBatch: (batch: BatchRecord) => void;
   showActions: boolean;
 }) {
   const statusConfig = {
@@ -1177,16 +1284,27 @@ function BatchCard({
             <span className="text-[10px] text-muted-foreground">{date}</span>
             <span className="text-[10px] font-mono text-muted-foreground">{batch.total_rows.toLocaleString()} dòng</span>
           </div>
-          {uploaderName && isApprover && (
+          {uploaderName && canApprove && (
             <p className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
               <Eye className="w-3 h-3" /> {uploaderName}
             </p>
           )}
         </div>
+
+        {/* View data button */}
+        {canRead && (
+          <button
+            onClick={() => onViewBatch(batch)}
+            className="shrink-0 flex items-center gap-1 text-[10px] text-primary border border-primary/20 bg-primary/5 hover:bg-primary/10 rounded-md px-2 py-1 transition-colors"
+          >
+            <Eye className="w-3 h-3" />
+            Xem
+          </button>
+        )}
       </div>
 
       {/* Approve / Reject buttons for approver */}
-      {showActions && isApprover && batch.status === "draft" && (
+      {showActions && canApprove && batch.status === "draft" && (
         <div className="flex gap-2 mt-3 pt-3 border-t border-border/40">
           <button
             onClick={() => onApprove(batch.id)}
