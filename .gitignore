@@ -47,3 +47,12 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# local env / generated validation artifacts
+.env
+**/.env
+.playwright-mcp/
+*.log
+*.png
+.runtime/
+*.pid
